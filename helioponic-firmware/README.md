@@ -170,19 +170,27 @@ The ESP32 publishes JSON every 1 second to `helioponic/sensor/uplink` using exac
 
 3. Create `esp32/secrets.h` with your WiFi credentials:
    ```cpp
+   cp esp32/secrets.h.example esp32/secrets.h
+   ```
+   Then edit `secrets.h`:
+   ```cpp
    #define WIFI_SSID     "YourWiFiSSID"
    #define WIFI_PASSWORD "YourWiFiPassword"
-   #define MQTT_BROKER   "192.168.1.100"
    #define MQTT_USER     ""
    #define MQTT_PASS     ""
    ```
 
-4. Edit `esp32/config.h` if needed (pin mappings, thresholds, MQTT topics)
+4. (Optional) Edit the hardware config at the top of `esp32/helioponic_esp32.ino`
+   if you need to change pin mappings, calibration values, or thresholds.
 
 5. Open `esp32/helioponic_esp32.ino` in the Arduino IDE
 6. Select your ESP32 board (e.g., **ESP32 Dev Module**)
 7. Select the correct COM port
 8. Upload
+
+> **Note:** `config.h` has been removed — all hardware configuration is now
+> defined directly at the top of each `.ino` file. Only `secrets.h` remains
+> separate (gitignored) for WiFi & MQTT credentials.
 
 ---
 
@@ -243,9 +251,9 @@ Refer to `MOBILE_TESTING_GUIDE.md` and `TESTING_GUIDE.md` in `guides/` for detai
 | Symptom | Likely Cause | Solution |
 |---------|--------------|----------|
 | No serial data | TX/RX crossed or baud mismatch | Verify wiring: ESP32 TX1 (17)→Uno RX (0) |
-| MQTT connection fails | Wrong broker address | Check `MQTT_BROKER` in `secrets.h` / `config.h` |
+| MQTT connection fails | Wrong broker address | Check `MQTT_BROKER` in `secrets.h` or set `MQTT_BROKER` in the `.ino` file |
 | WiFi disconnects | Weak signal | Verify credentials in `secrets.h` |
 | JSON parse error | Payload too large | Reduce buffer size or use `mqttClient.setBufferSize(512)` |
-| pH reads 0 or 14 | Sensor not calibrated | Adjust `PH_SLOPE` / `PH_INTERCEPT` in `config.h` |
+| pH reads 0 or 14 | Sensor not calibrated | Adjust `PH_SLOPE` / `PH_INTERCEPT` in the `.ino` file |
 | Relays not activating | Wrong logic (HIGH vs LOW) | Relays are Active-LOW: `LOW = ON`, `HIGH = OFF` |
 | Ultrasonic reads 999 | Out of range or disconnected | Check TRIG/ECHO wiring to HC-SR04 |

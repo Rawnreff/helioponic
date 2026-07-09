@@ -12,7 +12,12 @@
 // by the ESP32 (helioponic_esp32.ino).
 // =============================================================================
 
-#include "config.h"
+// ---- Relay Pins (Active-LOW: LOW = relay ON, HIGH = relay OFF) ----
+#define RELAY_POMPA1  4     // Circulation pump
+#define RELAY_POMPA2  5     // pH dosing pump
+
+// ---- Serial Communication ----
+#define SERIAL_BAUD   9600
 
 // ---- Pump State Tracking ----
 String stateP1 = "OFF";
