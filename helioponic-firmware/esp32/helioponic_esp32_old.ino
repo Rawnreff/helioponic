@@ -1,131 +1,41 @@
 // =============================================================================
-// Helioponic — ESP32 Firmware
+// Helioponic — ESP32 Connectivity Layer (included by helioponic_esp32.ino)
 // =============================================================================
-// Role: Wi-Fi gateway + MQTT bridge
-// - Reads CSV data from Arduino Uno via UART2 (Serial2)
-// - Parses and packages into JSON
-// - Publishes to MQTT topic: helioponic/sensor/uplink
-// - Subscribes to: helioponic/config/downlink for remote threshold updates
-// - Forwards threshold updates to Arduino Uno via Serial2
+//
+// WiFi + MQTT connectivity — connecting to broker, publishing sensor data,
+// handling downlink config/actuator commands from the backend.
+//
+// Depends on globals defined in helioponic_esp32_raw.ino (jarakCm, current_tds,
+// current_ph, perintahPompa1, perintahPompa2, etc.)
 // =============================================================================
 
-#include <WiFi.h>
-#include <PubSubClient.h>
-#include <ArduinoJson.h>
+// ---- MQTT Broker Defaults ----
+// Override these in secrets.h (via #ifndef guard) for physical deployment.
+#ifndef MQTT_BROKER
+#define MQTT_BROKER       "localhost"
+#endif
+#define MQTT_PORT         1883
+#define MQTT_CLIENT_ID    "helioponic_esp32_001"
 
-#include "config.h"
-#include "secrets.h"
-
-// ---- Globals ----
-WiFiClient wifiClient;
-PubSubClient mqttClient(wifiClient);
-
-// ---- Sensor Data Buffer (from Arduino Uno) ----
-struct SensorData {
-  float ph;
-  float tds;
-  float temp;
-  float hum;
-  float wl;
-  float vSolar;
-  float iSolar;
-  int   pumpCirc;
-  int   pumpPhD;
-  int   pumpNutA;
-  int   pumpNutB;
-  int   pumpRaw;
-};
+// ---- MQTT Topics ----
+#define TOPIC_UPLINK            "helioponic/sensor/uplink"        // ESP32 -> Broker (QoS 0)
+#define TOPIC_DOWNLINK          "helioponic/config/downlink"      // Broker -> ESP32 — threshold config (QoS 1)
+#define TOPIC_ACTUATOR_DOWNLINK "helioponic/actuator/downlink"    // Broker -> ESP32 — pump command (QoS 1)
 
 // ---- Timing ----
-unsigned long lastPublish = 0;
-unsigned long lastWifiCheck = 0;
+#define MQTT_PUBLISH_MS   1000    // Publish to MQTT every 1 second
+#define MQTT_RECONNECT_MS 5000    // MQTT reconnect delay (ms)
+
+// ---- Connectivity Globals ----
+WiFiClient wifiClient;
+PubSubClient mqttClient(wifiClient);
+unsigned long lastPublishMillis = 0;
 unsigned long lastMqttRetry = 0;
-bool mqttConnected = false;
-bool ledState = false;
-
-// ---- Ring buffer for non-blocking Serial2 reads ----
-#define SERIAL_BUF_SIZE  256
-static char serialBuf[SERIAL_BUF_SIZE];
-static int serialIdx = 0;
+unsigned long lastWifiCheck = 0;
 
 // =============================================================================
-// SETUP
+// WiFi connection
 // =============================================================================
-void setup() {
-  // Debug serial (USB)
-  Serial.begin(SERIAL_BAUD);
-
-  // UART2 for communication with Arduino Uno
-  Serial2.begin(SERIAL_BAUD, SERIAL_8N1, RXD2, TXD2);
-
-  pinMode(STATUS_LED, OUTPUT);
-  digitalWrite(STATUS_LED, LOW);
-
-  // Connect to Wi-Fi (blocking is acceptable during setup)
-  connectWiFi();
-
-  // Configure NTP for accurate timestamps
-  // Indonesia Western Time (UTC+7). Adjust for your timezone.
-  configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
-
-  // Configure MQTT
-  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-  mqttClient.setCallback(mqttCallback);
-  mqttClient.setBufferSize(512);
-}
-
-// =============================================================================
-// MAIN LOOP
-// =============================================================================
-void loop() {
-  unsigned long now = millis();
-
-  // --- 1. Maintain MQTT connection (non-blocking) ---
-  if (!mqttClient.connected()) {
-    if (now - lastMqttRetry >= MQTT_RECONNECT_MS) {
-      lastMqttRetry = now;
-      attemptMQTT();
-    }
-  }
-  mqttClient.loop();
-
-  // --- 2. Maintain Wi-Fi connection ---
-  if (now - lastWifiCheck > 30000) {
-    lastWifiCheck = now;
-    if (WiFi.status() != WL_CONNECTED) {
-      connectWiFi();
-    }
-  }
-
-  // --- 3. Read Serial data from Arduino Uno (non-blocking ring buffer) ---
-  while (Serial2.available() > 0) {
-    char c = Serial2.read();
-    if (c == '\n') {
-      serialBuf[serialIdx] = '\0';
-
-      if (serialIdx > 0) {
-        SensorData data;
-        if (parseCSV(serialBuf, &data)) {
-          if (now - lastPublish >= MQTT_PUBLISH_MS) {
-            lastPublish = now;
-            publishSensorData(&data);
-            ledState = !ledState;
-            digitalWrite(STATUS_LED, ledState ? HIGH : LOW);
-          }
-        }
-      }
-
-      serialIdx = 0;
-    } else if (serialIdx < SERIAL_BUF_SIZE - 1) {
-      serialBuf[serialIdx++] = c;
-    }
-  }
-}
-
-// =============================================================================
-// WI-FI
-// =============================================================================
-
 void connectWiFi() {
   Serial.print("Connecting to WiFi: ");
   Serial.println(WIFI_SSID);
@@ -139,28 +49,23 @@ void connectWiFi() {
     Serial.print(".");
     attempts++;
   }
-
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nWiFi connected");
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println("\nWiFi failed — will retry");
+    Serial.println("\nWiFi failed — will retry in loop");
   }
 }
 
 // =============================================================================
-// MQTT
+// MQTT connection
 // =============================================================================
-
 void attemptMQTT() {
   if (mqttClient.connected()) return;
-
   Serial.print("Connecting to MQTT... ");
 
-  boolean connected = false;
-
-  // Attempt with credentials if provided
+  bool connected = false;
   if (strlen(MQTT_USER) > 0) {
     connected = mqttClient.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASS);
   } else {
@@ -169,39 +74,26 @@ void attemptMQTT() {
 
   if (connected) {
     Serial.println("connected");
-
-    // Subscribe to downlink topic for remote threshold updates (QoS 1)
-    boolean subResult = mqttClient.subscribe(TOPIC_DOWNLINK, 1);
-    if (subResult) {
-      Serial.print("Subscribed to: ");
-      Serial.println(TOPIC_DOWNLINK);
-    }
-
-    ledState = true;
-    digitalWrite(STATUS_LED, HIGH);
+    mqttClient.subscribe(TOPIC_DOWNLINK, 1);
+    mqttClient.subscribe(TOPIC_ACTUATOR_DOWNLINK, 1);
+    Serial.print("Subscribed to: ");
+    Serial.println(TOPIC_DOWNLINK);
+    Serial.print("Subscribed to: ");
+    Serial.println(TOPIC_ACTUATOR_DOWNLINK);
   } else {
     Serial.print("failed (rc=");
     Serial.print(mqttClient.state());
-    Serial.println("), will retry in 5s");
-    digitalWrite(STATUS_LED, LOW);
+    Serial.println(") will retry");
   }
 }
 
-/// MQTT callback — handles incoming messages on subscribed topics.
-/// Expects JSON payload matching the schema at TOPIC_DOWNLINK.
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  // Null-terminate the payload
-  char message[length + 1];
-  memcpy(message, payload, length);
-  message[length] = '\0';
-
-  Serial.print("MQTT message received on: ");
-  Serial.println(topic);
-  Serial.print("Payload: ");
+// =============================================================================
+// Config downlink handler — threshold updates from backend
+// =============================================================================
+void handleConfigDownlink(const char* message) {
+  Serial.print("Config downlink: ");
   Serial.println(message);
 
-  // Parse JSON threshold update
-  // Expected format: { "target_ph": 6.0, "target_ppm": 800, ... }
   StaticJsonDocument<256> doc;
   DeserializationError error = deserializeJson(doc, message);
   if (error) {
@@ -210,122 +102,135 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  float targetPH       = doc["target_ph"] | 6.0f;
-  float targetPPM      = doc["target_ppm"] | 800.0f;
-  float minWaterLevel  = doc["min_water_level"] | 20.0f;
-  float maxWaterLevel  = doc["max_water_level"] | 90.0f;
+  if (doc.containsKey("jarak_on"))   runtime_jarak_on  = doc["jarak_on"]  | JARAK_ON;
+  if (doc.containsKey("jarak_off"))  runtime_jarak_off = doc["jarak_off"] | JARAK_OFF;
+  if (doc.containsKey("tds_on"))     runtime_tds_on    = doc["tds_on"]    | TDS_ON;
+  if (doc.containsKey("tds_off"))    runtime_tds_off   = doc["tds_off"]   | TDS_OFF;
 
-  // Forward to Arduino Uno via Serial2
-  // Format: THRESH:pH,PPM,minWL,maxWL\n
-  char cmd[64];
-  snprintf(cmd, sizeof(cmd), "THRESH:%.2f,%.0f,%.1f,%.1f\n",
-           targetPH, targetPPM, minWaterLevel, maxWaterLevel);
-  Serial2.print(cmd);
-
-  Serial.print("Forwarded to Arduino: ");
-  Serial.print(cmd);
+  Serial.println("Runtime thresholds updated:");
+  Serial.print("  jarak_on = ");  Serial.println(runtime_jarak_on);
+  Serial.print("  jarak_off = "); Serial.println(runtime_jarak_off);
+  Serial.print("  tds_on = ");    Serial.println(runtime_tds_on);
+  Serial.print("  tds_off = ");   Serial.println(runtime_tds_off);
 }
 
 // =============================================================================
-// DATA PARSING
+// Actuator downlink handler — pump commands from mobile app
 // =============================================================================
+void handleActuatorCommand(const char* message) {
+  Serial.print("Actuator command: ");
+  Serial.println(message);
 
-/// Parses a CSV line from Arduino Uno into a SensorData struct.
-/// Uses manual char* parsing (no String objects) to avoid heap fragmentation.
-/// Expected format: pH,TDS,temp,hum,wl,v_solar,i_solar,circ,ph_d,nut_a,nut_b,raw
-bool parseCSV(const char* line, SensorData* data) {
-  char buf[SERIAL_BUF_SIZE];
-  strncpy(buf, line, SERIAL_BUF_SIZE - 1);
-  buf[SERIAL_BUF_SIZE - 1] = '\0';
+  StaticJsonDocument<128> doc;
+  DeserializationError error = deserializeJson(doc, message);
+  if (error) {
+    Serial.print("JSON parse error: ");
+    Serial.println(error.c_str());
+    return;
+  }
 
-  char* token = strtok(buf, ",");
-  if (token == NULL) return false;
-  data->ph       = atof(token);
+  const char* pump = doc["pump"] | "";
+  int state = doc["state"] | 0;
 
-  token = strtok(NULL, ",");
-  if (token == NULL) return false;
-  data->tds      = atof(token);
+  if (strlen(pump) == 0) {
+    Serial.println("No pump field in actuator command");
+    return;
+  }
 
-  token = strtok(NULL, ",");
-  if (token == NULL) return false;
-  data->temp     = atof(token);
+  Serial.print("Pump: ");
+  Serial.print(pump);
+  Serial.print(" -> ");
+  Serial.println(state ? "ON" : "OFF");
 
-  token = strtok(NULL, ",");
-  if (token == NULL) return false;
-  data->hum      = atof(token);
-
-  token = strtok(NULL, ",");
-  if (token == NULL) return false;
-  data->wl       = atof(token);
-
-  token = strtok(NULL, ",");
-  if (token == NULL) return false;
-  data->vSolar   = atof(token);
-
-  token = strtok(NULL, ",");
-  if (token == NULL) return false;
-  data->iSolar   = atof(token);
-
-  token = strtok(NULL, ",");
-  if (token == NULL) return false;
-  data->pumpCirc = atoi(token);
-
-  token = strtok(NULL, ",");
-  if (token == NULL) return false;
-  data->pumpPhD  = atoi(token);
-
-  token = strtok(NULL, ",");
-  if (token == NULL) return false;
-  data->pumpNutA = atoi(token);
-
-  token = strtok(NULL, ",");
-  if (token == NULL) return false;
-  data->pumpNutB = atoi(token);
-
-  token = strtok(NULL, ",");
-  if (token == NULL) return false;
-  data->pumpRaw  = atoi(token);
-
-  return true;
+  if (strcmp(pump, "pompa1") == 0 || strcmp(pump, "circ") == 0) {
+    perintahPompa1 = (state == 1);
+    flushSerial1Input();
+    Serial1.print("P1:");
+    Serial1.println(state ? "1" : "0");
+  } else if (strcmp(pump, "pompa2") == 0 || strcmp(pump, "ph_d") == 0) {
+    perintahPompa2 = (state == 1);
+    flushSerial1Input();
+    Serial1.print("P2:");
+    Serial1.println(state ? "1" : "0");
+  } else {
+    Serial.println("Unknown pump — ignoring");
+  }
 }
 
 // =============================================================================
-// MQTT PUBLISH
+// MQTT message router
 // =============================================================================
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  char message[length + 1];
+  memcpy(message, payload, length);
+  message[length] = '\0';
 
-/// Builds a JSON payload and publishes to TOPIC_UPLINK.
-/// Payload format matches SCHEMA.md:
-/// { device_id, ts, ph, tds, temp, hum, wl, v_solar, i_solar, pumps: {...} }
-void publishSensorData(SensorData* data) {
-  // Use a static JSON document to avoid heap fragmentation
-  StaticJsonDocument<384> doc;
+  if (strcmp(topic, TOPIC_ACTUATOR_DOWNLINK) == 0) {
+    handleActuatorCommand(message);
+    return;
+  }
+  handleConfigDownlink(message);
+}
 
-  doc["device_id"] = DEVICE_ID;
-  doc["ts"]        = time(nullptr);  // Unix timestamp (requires NTP or manual set)
-  doc["ph"]        = data->ph;
-  doc["tds"]       = data->tds;
-  doc["temp"]      = data->temp;
-  doc["hum"]       = data->hum;
-  doc["wl"]        = data->wl;
-  doc["v_solar"]   = data->vSolar;
-  doc["i_solar"]   = data->iSolar;
+// =============================================================================
+// Publish sensor data to MQTT
+// =============================================================================
+void publishSensorData() {
+  StaticJsonDocument<256> doc;
 
-  JsonObject pumps = doc.createNestedObject("pumps");
-  pumps["circ"]  = data->pumpCirc;
-  pumps["ph_d"]  = data->pumpPhD;
-  pumps["nut_a"] = data->pumpNutA;
-  pumps["nut_b"] = data->pumpNutB;
-  pumps["raw"]   = data->pumpRaw;
+  doc["device_id"]  = DEVICE_ID;
+  doc["ts"]         = time(nullptr);
+  doc["jarak_cm"]   = jarakCm;
+  doc["tds_value"]  = current_tds;
+  doc["current_ph"] = current_ph;
+  doc["pompa1"]     = (statusPompa1DariUno == "ON") ? 1 : 0;
+  doc["pompa2"]     = (statusPompa2DariUno == "ON") ? 1 : 0;
 
   char buffer[256];
-  size_t len = serializeJson(doc, buffer);
+  serializeJson(doc, buffer);
 
-  boolean result = mqttClient.publish(TOPIC_UPLINK, buffer, false);
-
-  if (result) {
+  if (mqttClient.publish(TOPIC_UPLINK, buffer, false)) {
     Serial.print("Published: ");
     Serial.println(buffer);
   } else {
     Serial.println("MQTT publish failed");
+  }
+}
+
+// =============================================================================
+// Initialize connectivity (WiFi + NTP + MQTT)
+// =============================================================================
+void initConnectivity() {
+  connectWiFi();
+  configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
+  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  mqttClient.setCallback(mqttCallback);
+  mqttClient.setBufferSize(512);
+}
+
+// =============================================================================
+// Run one connectivity maintenance cycle
+// Called every loop() iteration — handles WiFi check, MQTT reconnect, MQTT loop
+// =============================================================================
+void runConnectivityCycle(unsigned long now) {
+  // Maintain WiFi
+  if (now - lastWifiCheck >= 30000) {
+    lastWifiCheck = now;
+    if (WiFi.status() != WL_CONNECTED) connectWiFi();
+  }
+
+  // Maintain MQTT
+  if (!mqttClient.connected()) {
+    if (now - lastMqttRetry >= MQTT_RECONNECT_MS) {
+      lastMqttRetry = now;
+      attemptMQTT();
+    }
+  }
+  mqttClient.loop();
+
+  // Publish sensor data periodically
+  if (now - lastPublishMillis >= MQTT_PUBLISH_MS) {
+    lastPublishMillis = now;
+    publishSensorData();
   }
 }
