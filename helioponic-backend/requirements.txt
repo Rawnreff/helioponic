@@ -1,0 +1,40 @@
+# =============================================================================
+# Helioponic Backend — Python Dependencies
+# =============================================================================
+# FastAPI framework & server
+fastapi>=0.115.0,<1.0.0
+uvicorn[standard]>=0.34.0,<1.0.0
+
+# Async MongoDB driver
+motor>=3.6.0,<4.0.0
+
+# Pydantic settings (.env parsing)
+pydantic-settings>=2.7.0,<3.0.0
+
+# Async MQTT client
+gmqtt>=0.6.14,<1.0.0
+
+# JWT token handling
+python-jose[cryptography]>=3.3.0,<4.0.0
+
+# Password hashing (bcrypt)
+passlib[bcrypt]>=1.7.4,<2.0.0
+bcrypt>=4.0.0,<5.0.0
+
+# Email validation
+pydantic[email]>=2.10.0,<3.0.0
+email-validator>=2.2.0,<3.0.0
+
+# BSON ObjectId support
+pymongo>=4.10.0,<5.0.0
+
+# Production server
+gunicorn>=23.0.0,<24.0.0
+
+# =============================================================================
+# Test Dependencies (install with: pip install -r requirements.txt dev-requirements.txt)
+# =============================================================================
+pytest>=8.0.0,<9.0.0
+pytest-asyncio>=0.24.0,<1.0.0
+httpx>=0.28.0,<1.0.0
+mongomock-motor>=0.0.36,<1.0.0

@@ -1,0 +1,62 @@
+"""
+Water volume calculation service — domain logic for 2-pump hardware.
+
+Water level is derived from the ultrasonic distance reading (jarak_cm).
+  water_level_cm = TANK_HEIGHT_CM - jarak_cm
+  water_level_pct = (water_level_cm / TANK_HEIGHT_CM) * 100
+
+Pump 1 (pompa1) = Circulation pump — water is recirculated, no net consumption
+Pump 2 (pompa2) = pH dosing pump — small volume consumed during dosing
+"""
+
+from datetime import datetime
+
+
+class WaterCalculator:
+    """Handles water level differentiation.
+
+    Tank geometry constants are configurable per installation.
+    """
+
+    # Total reservoir depth in cm (default: 30cm tank)
+    TANK_HEIGHT_CM: float = 30.0
+
+    # Tank cross-sectional area in cm² (default: 50cm x 50cm = 2500 cm²)
+    TANK_AREA_CM2: float = 2500.0
+
+    def jarak_to_water_level_pct(self, jarak_cm: int) -> float:
+        """Convert ultrasonic distance reading to water level percentage.
+
+        If jarak_cm is 999 (out of range), return 0.
+        """
+        if jarak_cm >= 999 or jarak_cm <= 0:
+            return 0.0
+        water_depth = self.TANK_HEIGHT_CM - float(jarak_cm)
+        if water_depth < 0:
+            return 0.0
+        return (water_depth / self.TANK_HEIGHT_CM) * 100.0
+
+    def level_delta_to_volume(self, level_delta_pct: float) -> float:
+        """Convert water level percentage change to volume in liters.
+
+        1% of tank height = 0.3 cm → volume = 0.3 cm * 2500 cm² = 750 cm³ = 0.75 L
+        """
+        delta_cm = (level_delta_pct / 100.0) * self.TANK_HEIGHT_CM
+        volume_cm3 = delta_cm * self.TANK_AREA_CM2
+        return volume_cm3 / 1000.0
+
+    def calculate_water_delta(
+        self,
+        prev_jarak_cm: int,
+        curr_jarak_cm: int,
+    ) -> tuple[float, float]:
+        """Calculate water level change.
+
+        Returns (water_level_pct, volume_change_liters).
+        Positive volume = water added, negative = water consumed.
+        """
+        prev_pct = self.jarak_to_water_level_pct(prev_jarak_cm)
+        curr_pct = self.jarak_to_water_level_pct(curr_jarak_cm)
+        delta_pct = curr_pct - prev_pct
+        volume_l = self.level_delta_to_volume(delta_pct)
+        return curr_pct, volume_l

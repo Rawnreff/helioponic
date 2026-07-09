@@ -1,0 +1,101 @@
+# =============================================================================
+# Helioponic — Root .gitignore
+# =============================================================================
+
+# ---- Environment & Secrets ----
+.env
+.env.local
+.env.*.local
+*.secret.*
+**/secrets.h
+guides/
+.rules
+DIRECTORY TREE.md
+helioponic-mobile-vs-backend.md
+PRD.md
+SCHEMA.md
+SKILLS.md
+SYSTEM ARCHITECTURE.md
+FEATURES_AUDIT.md
+mcp-config.json
+
+# ---- IDE & Editors ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- OS Files ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Docker ----
+docker-compose.override.yml
+
+# ---- Python Backend (helioponic-backend/) ----
+__pycache__/
+*.py[cod]
+*$py.class
+helioponic-backend/.venv/
+helioponic-backend/venv/
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.Python
+*.so
+instance/
+*.manifest
+*.spec
+
+# Legacy build artifacts
+helioponic-backend/helioponic-backend
+helioponic-backend/helioponic-backend.exe
+helioponic-backend/api
+helioponic-backend/api.exe
+helioponic-backend/tmp/
+
+# ---- React Native Mobile (helioponic-mobile/) ----
+# Dependencies
+helioponic-mobile/node_modules/
+
+# Metro bundler
+helioponic-mobile/.metro-health-check*
+helioponic-mobile/metro-cache/
+helioponic-mobile/.expo/
+
+# iOS native build artifacts
+helioponic-mobile/ios/Pods/
+helioponic-mobile/ios/build/
+helioponic-mobile/ios/*.xcworkspace
+helioponic-mobile/ios/Podfile.lock
+
+# Android native build artifacts
+helioponic-mobile/android/build/
+helioponic-mobile/android/.gradle/
+helioponic-mobile/android/app/build/
+helioponic-mobile/android/local.properties
+
+# TypeScript compilation cache
+helioponic-mobile/tsconfig.tsbuildinfo
+
+# Detox (E2E) test artifacts
+helioponic-mobile/.detoxrc.json
+helioponic-mobile/e2e/
+
+# ---- Generated Build Artifacts ----
+*.apk
+*.aab
+*.hprof
+
+# ---- Firmware (helioponic-firmware/) ----
+helioponic-firmware/arduino_uno/build/
+helioponic-firmware/esp32/build/
+helioponic-firmware/**/secrets.h
+
+# ---- Generated/Logs ----
+*.log
+tmp/

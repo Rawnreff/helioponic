@@ -1,0 +1,70 @@
+# =============================================================================
+# Helioponic Backend — Python FastAPI .gitignore
+# =============================================================================
+
+# ---- Environment & Secrets ----
+.env
+.env.local
+.env.*.local
+
+# ---- Virtual Environments ----
+.venv/
+venv/
+env/
+ENV/
+.venv.bak/
+
+# ---- Python Bytecode & Build Artifacts ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+eggs/
+parts/
+bin/
+var/
+sdist/
+develop-eggs/
+installed.cfg
+lib/
+lib64/
+
+# ---- Test & Coverage ----
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ---- IDE & Editors ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- OS Files ----
+.DS_Store
+Thumbs.db
+
+# ---- Docker ----
+docker-compose.override.yml
+
+# ---- Logs ----
+*.log
+
+# ---- Legacy Go build artifacts (migration remnants) ----
+helioponic-backend
+helioponic-backend.exe
+api
+api.exe
+tmp/

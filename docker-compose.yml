@@ -1,0 +1,97 @@
+# =============================================================================
+# Helioponic — Docker Compose (Python FastAPI + MongoDB + Mosquitto)
+# =============================================================================
+# Tech stack: FastAPI (Python) | MongoDB 7 | Mosquitto 2
+#
+# Quick start:
+#   docker compose up -d                     # Start all services
+#   docker compose up -d --build backend      # Rebuild backend after code changes
+#   docker compose logs -f backend            # View real-time logs
+#   docker compose exec backend pytest -v     # Run tests inside container
+# =============================================================================
+
+services:
+  # ---- MongoDB Database (NoSQL) ----
+  mongodb:
+    image: mongo:latest
+    container_name: helioponic-mongodb
+    restart: unless-stopped
+    ports:
+      - "27018:27017"
+    environment:
+      MONGO_INITDB_DATABASE: helioponic
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: echo "db.runCommand('ping').ok" | mongosh --quiet || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - helioponic-net
+
+  # ---- Mosquitto MQTT Broker ----
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: helioponic-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/broker/uptime' -C 1 -W 3 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - helioponic-net
+
+  # ---- Python FastAPI Backend (REST + WebSocket + MQTT Subscriber) ----
+  backend:
+    build:
+      context: ./helioponic-backend
+      dockerfile: Dockerfile
+    container_name: helioponic-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DB_NAME: helioponic
+      MQTT_BROKER: mosquitto
+      MQTT_PORT: 1883
+      SERVER_PORT: 8000
+      LOG_LEVEL: info
+      JWT_SECRET: change-me-in-production
+      JWT_EXPIRATION_HOURS: 72
+    volumes:
+      - ./helioponic-backend/app:/app/app:ro
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    networks:
+      - helioponic-net
+
+networks:
+  helioponic-net:
+    name: helioponic-network
+    driver: bridge
+
+volumes:
+  mongodb_data:
+    name: helioponic-mongodb-data
+  mosquitto_data:
+    name: helioponic-mosquitto-data
+  mosquitto_log:
+    name: helioponic-mosquitto-log

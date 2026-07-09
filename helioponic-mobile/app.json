@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "Helioponic",
+    "slug": "helioponic-mobile",
+    "version": "4.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0D6B2C"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.helioponic.mobile"
+    },
+    "android": {
+      "package": "com.helioponic.mobile"
+    },
+    "extra": {
+      "apiUrl": "",
+      "wsUrl": ""
+    },
+    "plugins": ["expo-asset", "expo-font"]
+  }
+}
