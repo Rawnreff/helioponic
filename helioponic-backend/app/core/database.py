@@ -46,6 +46,12 @@ async def ensure_indexes():
     await db.sensor_logs.create_index("device_id")
     await db.sensor_logs.create_index([("recorded_at", -1)])
     await db.sensor_logs.create_index([("device_id", 1), ("recorded_at", -1)])
+    # TTL index: auto-delete sensor data after 7 days
+    await db.sensor_logs.create_index(
+        [("recorded_at", 1)],
+        expireAfterSeconds=604800,  # 7 days
+        name="sensor_logs_ttl_7d",
+    )
 
     # energy_records indexes
     await db.energy_records.create_index("device_id")
@@ -65,5 +71,19 @@ async def ensure_indexes():
     # devices indexes
     await db.devices.create_index("device_id", unique=True)
     await db.devices.create_index("user_id")
+
+    # notifications indexes
+    await db.notifications.create_index("device_id")
+    await db.notifications.create_index([("device_id", 1), ("created_at", -1)])
+    await db.notifications.create_index([("device_id", 1), ("read", 1)])
+    # TTL index: auto-delete old notifications after 30 days
+    await db.notifications.create_index(
+        [("created_at", 1)],
+        expireAfterSeconds=2592000,  # 30 days
+        name="notifications_ttl_30d",
+    )
+
+    # night_mode_snapshots indexes
+    await db.night_mode_snapshots.create_index("device_id", unique=True)
 
     print("[INFO] MongoDB indexes ensured")

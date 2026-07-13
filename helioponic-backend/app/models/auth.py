@@ -22,7 +22,7 @@ class User(BaseModel):
 
 class Device(BaseModel):
     """Device document in the devices collection (One-to-Many with users)."""
-    user_id: int  # References User.id
+    user_id: str  # References User.id
     device_id: str
     name: str = ""
     is_active: bool = True
