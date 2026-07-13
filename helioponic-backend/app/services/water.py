@@ -18,8 +18,8 @@ class WaterCalculator:
     Tank geometry constants are configurable per installation.
     """
 
-    # Total reservoir depth in cm (default: 30cm tank)
-    TANK_HEIGHT_CM: float = 30.0
+    # Total reservoir depth in cm (actual tank depth: 7cm)
+    TANK_HEIGHT_CM: float = 7.0
 
     # Tank cross-sectional area in cm² (default: 50cm x 50cm = 2500 cm²)
     TANK_AREA_CM2: float = 2500.0
@@ -27,9 +27,18 @@ class WaterCalculator:
     def jarak_to_water_level_pct(self, jarak_cm: int) -> float:
         """Convert ultrasonic distance reading to water level percentage.
 
+        Tank depth = 7 cm
+        Formula: water_level_pct = ((7 - jarak_cm) / 7) × 100
+
+        Examples:
+          - jarak_cm = 0  → water depth = 7cm → 100% (tank full)
+          - jarak_cm = 3.5 → water depth = 3.5cm → 50% (half full)
+          - jarak_cm = 7  → water depth = 0cm → 0% (empty)
+          - jarak_cm > 7  → 0% (sensor error or no water)
+
         If jarak_cm is 999 (out of range), return 0.
         """
-        if jarak_cm >= 999 or jarak_cm <= 0:
+        if jarak_cm >= 999 or jarak_cm < 0:
             return 0.0
         water_depth = self.TANK_HEIGHT_CM - float(jarak_cm)
         if water_depth < 0:

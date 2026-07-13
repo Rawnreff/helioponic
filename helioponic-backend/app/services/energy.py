@@ -1,11 +1,12 @@
 """
 Energy (Watt-hour) calculation service — domain logic for 2-pump hardware.
 
-Hardware configuration (from raw firmware):
-  - Pompa 1 (pompa1): Circulation pump  — 15W
-  - Pompa 2 (pompa2): pH dosing pump   — 15W
+Hardware configuration (configurable via .env / settings):
+  - Pompa 1 (pompa1): Circulation pump  — POMPA1_WATTS (default 15W)
+  - Pompa 2 (pompa2): pH dosing pump   — POMPA2_WATTS (default 15W)
 """
 
+from app.core.config import settings
 from app.models.sensor import SensorRecord
 from datetime import datetime
 
@@ -13,9 +14,13 @@ from datetime import datetime
 class EnergyCalculator:
     """Handles Watt-hour calculations for solar production and pump consumption."""
 
-    # Pump power ratings in Watts
-    POMPA1_WATTS: float = 15.0  # Circulation pump
-    POMPA2_WATTS: float = 15.0  # pH dosing pump
+    @property
+    def POMPA1_WATTS(self) -> float:
+        return settings.pompa1_watts
+
+    @property
+    def POMPA2_WATTS(self) -> float:
+        return settings.pompa2_watts
 
     def calculate_pump_wh(self, pump_watts: float, pump_on_seconds: float) -> float:
         """Compute energy consumed by a single pump.
