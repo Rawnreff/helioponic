@@ -90,7 +90,7 @@ The ESP32 publishes JSON every 1 second to `helioponic/sensor/uplink` using exac
 
 | JSON Field   | C++ Variable      | Source         | Description                        |
 |-------------|-------------------|----------------|------------------------------------|
-| `device_id` | `DEVICE_ID`       | config.h       | Unique device identifier           |
+| `device_id` | `DEVICE_ID`       | .ino #define   | Unique device identifier           |
 | `ts`        | `time(nullptr)`   | NTP            | Unix epoch timestamp               |
 | `jarak_cm`  | `jarakCm`         | HC-SR04        | Ultrasonic distance (cm). 999 = OOR |
 | `tds_value` | `current_tds`     | TDS GPIO4      | Total Dissolved Solids (ppm)       |
@@ -104,11 +104,14 @@ The ESP32 publishes JSON every 1 second to `helioponic/sensor/uplink` using exac
 
 | Topic | Direction | QoS | Frequency | Payload (JSON) |
 |-------|-----------|:---:|:---------:|----------------|
-| `helioponic/sensor/uplink` | ESP32 → Backend | 0 | Every 1s | `{device_id, ts, jarak_cm, tds_value, current_ph, pompa1, pompa2}` |
+| `helioponic/sensor/uplink` | ESP32 → Broker | 0 | Every 1s | `{device_id, ts, jarak_cm, tds_value, current_ph, pompa1, pompa2}` |
+| `helioponic/status/uplink` | ESP32 → Broker | 1 | Every 30s | `{device_id, status, version, night_mode, wifi_rssi}` |
+| `helioponic/alarm/uplink` | ESP32 → Broker | 1 | On-event | `{device_id, alarm_type, message, ts}` |
 | `helioponic/config/downlink` | Backend → ESP32 | 1 | On-demand | `{jarak_on, jarak_off, tds_on, tds_off}` |
 | `helioponic/actuator/downlink` | Backend → ESP32 | 1 | On-demand | `{pump, state}` |
+| `helioponic/night_mode/downlink` | Backend → ESP32 | 1 | On-demand | `{active, jarak_on?, jarak_off?, tds_on?, tds_off?}` |
 
-### Uplink Payload Example
+### Uplink Payload Example (sensor data)
 
 ```json
 {
@@ -119,6 +122,19 @@ The ESP32 publishes JSON every 1 second to `helioponic/sensor/uplink` using exac
   "current_ph": 6.5,
   "pompa1": 1,
   "pompa2": 0
+}
+```
+
+### Status Heartbeat Payload (every 30s)
+
+```json
+{
+  "device_id": "HELIO_001",
+  "status": "online",
+  "ts": 1719504000,
+  "version": "3.2.0",
+  "night_mode": 0,
+  "wifi_rssi": -45
 }
 ```
 
@@ -139,6 +155,25 @@ The ESP32 publishes JSON every 1 second to `helioponic/sensor/uplink` using exac
 {
   "pump": "pompa1",
   "state": 1
+}
+```
+
+### Night Mode Downlink Payload
+
+```json
+{
+  "active": true
+}
+```
+
+On deactivation, optional thresholds can be provided:
+```json
+{
+  "active": false,
+  "jarak_on": 105,
+  "jarak_off": 95,
+  "tds_on": 105.0,
+  "tds_off": 95.0
 }
 ```
 
@@ -168,11 +203,11 @@ The ESP32 publishes JSON every 1 second to `helioponic/sensor/uplink` using exac
    - `PubSubClient` by Nick O'Leary
    - `ArduinoJson` by Benoit Blanchon
 
-3. Create `esp32/secrets.h` with your WiFi credentials:
-   ```cpp
-   cp esp32/secrets.h.example esp32/secrets.h
+3. Create `helioponic_esp32.ino` from the example template:
+   ```bash
+   cp esp32/helioponic_esp32.example.ino esp32/helioponic_esp32.ino
    ```
-   Then edit `secrets.h`:
+   Then edit the CREDENTIALS section at the top of `helioponic_esp32.ino`:
    ```cpp
    #define WIFI_SSID     "YourWiFiSSID"
    #define WIFI_PASSWORD "YourWiFiPassword"
@@ -180,7 +215,7 @@ The ESP32 publishes JSON every 1 second to `helioponic/sensor/uplink` using exac
    #define MQTT_PASS     ""
    ```
 
-4. (Optional) Edit the hardware config at the top of `esp32/helioponic_esp32.ino`
+4. (Optional) Edit the hardware config section at the top of `esp32/helioponic_esp32.ino`
    if you need to change pin mappings, calibration values, or thresholds.
 
 5. Open `esp32/helioponic_esp32.ino` in the Arduino IDE
@@ -188,27 +223,37 @@ The ESP32 publishes JSON every 1 second to `helioponic/sensor/uplink` using exac
 7. Select the correct COM port
 8. Upload
 
-> **Note:** `config.h` has been removed — all hardware configuration is now
-> defined directly at the top of each `.ino` file. Only `secrets.h` remains
-> separate (gitignored) for WiFi & MQTT credentials.
+> **Note:** All hardware configuration and credentials are embedded directly
+> in `helioponic_esp32.ino`. The local file is gitignored. For GitHub,
+> use the template `helioponic_esp32.example.ino` with placeholder values.
 
 ---
 
-## Local Edge Automation (Bang-Bang Hysteresis)
+## Local Edge Automation (Independent Bang-Bang Hysteresis)
 
-The ESP32 runs pump automation locally — fully autonomous during network outages:
+The ESP32 runs pump automation locally — fully autonomous during network outages.
 
-| Condition | Action |
-|-----------|--------|
-| `jarak_cm > jarak_on` **AND** `tds_value > tds_on` | Both pumps ON |
-| `jarak_cm < jarak_off` **OR** `tds_value < tds_off` | Both pumps OFF |
-| Inside deadband (`jarak_off`–`jarak_on`) | Preserve existing pump state |
+Each pump is controlled **independently** by its own sensor (PRD-compliant):
+
+| Priority | Pump | Controlled By | ON Condition | OFF Condition |
+|:--------:|------|--------------|-------------|--------------|
+| HIGH | **Pompa 1** (Circulation) | `jarak_cm` only | `jarak_cm > jarak_on` | `jarak_cm < jarak_off` |
+| LOW  | **Pompa 2** (TDS Dosing) | `tds_value` only | `tds_value > tds_on` | `tds_value < tds_off` |
+| — | Inside deadband | — | Preserve existing state |
 
 Default thresholds (can be overridden via MQTT config downlink):
-- **jarak_on = 105 cm** — water low, turn pump ON
-- **jarak_off = 95 cm** — water recovered, turn pump OFF
-- **tds_on = 105 ppm** — nutrients low, turn pump ON
-- **tds_off = 95 ppm** — nutrients recovered, turn pump OFF
+- **jarak_on = 105 cm** — water low, turn Pompa 1 ON
+- **jarak_off = 95 cm** — water recovered, turn Pompa 1 OFF
+- **tds_on = 105 ppm** — nutrients low, turn Pompa 2 ON
+- **tds_off = 95 ppm** — nutrients recovered, turn Pompa 2 OFF
+
+### Manual Override
+MQTT actuator commands set `manualOverride` flags that persist until the next MQTT
+command clears them. During manual override, the bang-bang logic skips that pump.
+
+### Night Mode
+When active via MQTT `night_mode/downlink`, all pumps are forced OFF and
+automation is paused. Only manual commands are accepted.
 
 ---
 
@@ -251,8 +296,8 @@ Refer to `MOBILE_TESTING_GUIDE.md` and `TESTING_GUIDE.md` in `guides/` for detai
 | Symptom | Likely Cause | Solution |
 |---------|--------------|----------|
 | No serial data | TX/RX crossed or baud mismatch | Verify wiring: ESP32 TX1 (17)→Uno RX (0) |
-| MQTT connection fails | Wrong broker address | Check `MQTT_BROKER` in `secrets.h` or set `MQTT_BROKER` in the `.ino` file |
-| WiFi disconnects | Weak signal | Verify credentials in `secrets.h` |
+| MQTT connection fails | Wrong broker address | Check `MQTT_BROKER` in the CREDENTIALS section of `.ino` |
+| WiFi disconnects | Weak signal | Verify credentials in the CREDENTIALS section of `.ino` |
 | JSON parse error | Payload too large | Reduce buffer size or use `mqttClient.setBufferSize(512)` |
 | pH reads 0 or 14 | Sensor not calibrated | Adjust `PH_SLOPE` / `PH_INTERCEPT` in the `.ino` file |
 | Relays not activating | Wrong logic (HIGH vs LOW) | Relays are Active-LOW: `LOW = ON`, `HIGH = OFF` |
