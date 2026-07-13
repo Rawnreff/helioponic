@@ -93,7 +93,19 @@ helioponic-mobile/e2e/
 # ---- Firmware (helioponic-firmware/) ----
 helioponic-firmware/arduino_uno/build/
 helioponic-firmware/esp32/build/
-helioponic-firmware/esp32/helioponic_esp32.ino     # local version with real credentials
+
+# Local firmware with real credentials (WiFi, MQTT, IP) — NEVER commit these
+helioponic-firmware/esp32/helioponic_esp32.ino
+
+# Windows copy artifacts
+helioponic-firmware/**/*copy*.ino
+
+# Old/reference firmware versions (not actively developed)
+helioponic-firmware/esp32/helioponic_esp32_old.ino
+helioponic-firmware/esp32/helioponic_esp32_raw.ino
+helioponic-firmware/arduino_uno/helioponic_uno_old.ino
+helioponic-firmware/arduino_uno/helioponic_uno_raw.ino
+
 helioponic-firmware/**/secrets.h
 
 # ---- Generated/Logs ----
