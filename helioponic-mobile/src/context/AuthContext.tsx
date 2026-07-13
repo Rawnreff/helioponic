@@ -111,11 +111,11 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
       const devices: DeviceInfo[] = devicesRes.devices.map((d) => ({id: d.id, deviceId: d.device_id, name: d.name, isActive: d.is_active}));
       const active = devices.length > 0 ? devices[0].deviceId : state.activeDeviceId;
       dispatch({type: 'SET_DEVICES', devices, activeDeviceId: active || ''});
-    } catch {}
+    } catch (err) {console.warn('[Auth] refreshDevices failed:', (err as any)?.message || err)}
   }, [state.activeDeviceId]);
 
   const updateProfileData = useCallback((name: string, email: string) => dispatch({type: 'UPDATE_PROFILE', name, email}), []);
-  const activeDeviceId = state.activeDeviceId || 'HELIO_001';
+  const activeDeviceId = state.activeDeviceId || '';
 
   return (
     <AuthContext.Provider value={{state, login, register, logout, switchDevice, refreshDevices, updateProfileData, activeDeviceId}}>
