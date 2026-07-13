@@ -34,6 +34,8 @@ set -euo pipefail
 # ---- Konfigurasi Default ----
 BROKER="localhost"
 PORT=1883
+MQTT_USER="helioponic"
+MQTT_PASS="helioponic_mqtt_2024"
 TOPIC="helioponic/sensor/uplink"
 DEVICE_ID="HELIO_SIM_001"
 INTERVAL=1          # detik antar publish (match hardware 1s)
@@ -203,7 +205,7 @@ EOF
 }
 
 # ---- Persistent State ----
-prev_jarak=20
+prev_jarak=4    # Typical water level (~3cm air di tank 7cm)
 prev_tds=200.0
 prev_ph=6.5
 
@@ -232,17 +234,19 @@ while true; do
   ts=$(date +%s)
 
   # ── JARAK_CM (Ultrasonic distance) ──
-  # Normal range: 5-25 cm. 999 = out of range.
-  # Semakin kecil jarak = air lebih tinggi
+  # Tank depth: 7 cm. Range: 0-7 cm.
+  #   0 cm = water at sensor level (tank FULL)
+  #   7 cm = sensor reads bottom (tank EMPTY)
+  # Semakin kecil jarak = air lebih tinggi (tank lebih penuh)
   if [[ "$MODE" == "filling" ]]; then
-    # PDAM filling: jarak mengecil (air naik)
-    jarak=$(awk -v prev="$prev_jarak" 'BEGIN{srand(); printf "%.0f", prev - (rand()*3+1)}')
+    # PDAM filling: jarak mengecil (air naik, tank terisi)
+    jarak=$(awk -v prev="$prev_jarak" 'BEGIN{srand(); printf "%.0f", prev - (rand()*1.2+0.3)}')
   else
-    # Normal: random walk, 5-25 cm
-    jarak=$(awk -v prev="$prev_jarak" 'BEGIN{srand(); printf "%.0f", prev + (rand()-0.5)*4}')
+    # Normal: random walk, typical 2-6 cm (air di tengah tank)
+    jarak=$(awk -v prev="$prev_jarak" 'BEGIN{srand(); printf "%.0f", prev + (rand()-0.5)*1.5}')
   fi
-  if [[ "$jarak" -lt 2 ]]; then jarak=2; fi
-  if [[ "$jarak" -gt 200 ]]; then jarak=200; fi
+  if [[ "$jarak" -lt 0 ]]; then jarak=0; fi
+  if [[ "$jarak" -gt 7 ]]; then jarak=7; fi
   prev_jarak=$jarak
 
   # ── TDS_VALUE (TDS in ppm) ──
@@ -257,25 +261,39 @@ while true; do
   # Normal range: 5.5-7.5. Alarm: < 5.0
   ph_target=$([[ "$MODE" == "alarm" ]] && echo "4.5" || echo "$(random_float 5.5 7.0)")
   ph=$(awk -v prev="$prev_ph" -v target="$ph_target" 'BEGIN{srand(); printf "%.1f", prev + (target-prev)*0.15}')
-  if (( $(echo "$ph < 0" | bc -l) )); then ph=0; fi
-  if (( $(echo "$ph > 14" | bc -l) )); then ph=14; fi
+  if (( $(echo "$ph < 0" | awk '{print ($1 < 0)}') )); then ph=0; fi
+  if (( $(echo "$ph > 14" | awk '{print ($1 > 14)}') )); then ph=14; fi
   prev_ph=$ph
 
   # ── POMPA STATES ──
-  # Automation logic (matches ESP32 firmware):
-  # Pompa ON  → jarak > 105 && tds > 105
-  # Pompa OFF → jarak < 95 || tds < 95
+  # Independent automation logic (refactored per PRD):
+  # Pompa 1 (Water Circulation): controlled by jarak_cm (tank depth 7cm)
+  #   → ON when jarak > 5 (water low — jarak_on=5)
+  #   → OFF when jarak < 2 (water sufficient — jarak_off=2)
+  # Pompa 2 (TDS Dosing): controlled by tds_value only
+  # CORRECTED LOGIC: TDS LOW → nutrients depleted → dosing ON
+  # - ON when tds < 95 (tds_on — LOW threshold)
+  # - OFF when tds > 105 (tds_off — HIGH threshold)
+  #
+  # Using native awk for float comparisons
   p1=0; p2=0
-  if [[ "$jarak" -gt 105 && $(echo "$tds > 105" | bc -l) -eq 1 ]]; then
-    p1=1; p2=1
-  elif [[ "$jarak" -lt 95 ]] || (echo "$tds < 95" | bc -l); then
-    p1=0; p2=0
+  # Pompa 1 — Water level control (thresholds: on>5, off<2 for 7cm tank)
+  if (( $(echo "$jarak > 5" | awk '{print ($1 > 5)}') )); then
+    p1=1
+  elif (( $(echo "$jarak < 2" | awk '{print ($1 < 2)}') )); then
+    p1=0
+  fi
+  # Pompa 2 — TDS/Nutrient control (corrected: ON when LOW, OFF when HIGH)
+  if (( $(echo "$tds < 95" | awk '{print ($1 < 95)}') )); then
+    p2=1
+  elif (( $(echo "$tds > 105" | awk '{print ($1 > 105)}') )); then
+    p2=0
   fi
 
   # Build & publish
   build_payload "$ts" "$jarak" "$tds" "$ph" "$p1" "$p2" > /tmp/helioponic_payload_$$.json
 
-  if mosquitto_pub -h "$BROKER" -p "$PORT" -t "$TOPIC" -f /tmp/helioponic_payload_$$.json; then
+  if mosquitto_pub -h "$BROKER" -p "$PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$TOPIC" -f /tmp/helioponic_payload_$$.json; then
     count=$((count + 1))
     echo -e "[${GREEN}✓${NC}] ${BLUE}$(date '+%H:%M:%S')${NC} jarak=${CYAN}${jarak}cm${NC} tds=${CYAN}${tds}ppm${NC} pH=${CYAN}${ph}${NC} p1=${p1} p2=${p2}"
 
