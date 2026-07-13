@@ -1,5 +1,5 @@
 import React from 'react';
-import {View, StyleSheet, Platform, Dimensions} from 'react-native';
+import {View, Text, StyleSheet, Platform, Dimensions} from 'react-native';
 import {createNativeStackNavigator} from '@react-navigation/native-stack';
 import {createBottomTabNavigator} from '@react-navigation/bottom-tabs';
 import {LinearGradient} from 'expo-linear-gradient';
@@ -9,6 +9,7 @@ import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {Colors} from '../context/ThemeContext';
 import {RootStackParamList, MainTabParamList} from '../types/navigation';
 import {WebSocketProvider} from '../context/WebSocketContext';
+import {useNotificationStore} from '../store/notificationStore';
 
 import AuthScreen from '../screens/AuthScreen';
 import DashboardScreen from '../screens/DashboardScreen';
@@ -16,6 +17,7 @@ import PIDScreen from '../screens/PIDScreen';
 import AutomationScreen from '../screens/AutomationScreen';
 import AnalyticsScreen from '../screens/AnalyticsScreen';
 import ProfileScreen from '../screens/ProfileScreen';
+import NotificationsScreen from '../screens/NotificationsScreen';
 import DeviceOnboardingScreen from '../screens/DeviceOnboardingScreen';
 
 const {width: screenWidth} = Dimensions.get('window');
@@ -28,6 +30,7 @@ const iconContainerSize = isSmallScreen ? 40 : 44;
 function MainTabs() {
   const insets = useSafeAreaInsets();
   const bottomInset = Math.max(insets.bottom, 8);
+  const unreadCount = useNotificationStore((s) => s.unreadCount);
 
   return (
     <Tab.Navigator
@@ -63,6 +66,13 @@ function MainTabs() {
           return (
             <View style={[styles.iconContainer, focused && styles.iconContainerActive]}>
               <Ionicons name={iconName} size={focused ? size + 2 : size} color={focused ? '#FFFFFF' : color} />
+              {route.name === 'Dashboard' && unreadCount > 0 && (
+                <View style={styles.tabBadge}>
+                  <Text style={styles.tabBadgeText}>
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </Text>
+                </View>
+              )}
             </View>
           );
         },
@@ -87,6 +97,7 @@ export default function AppNavigator() {
         <>
           <Stack.Screen name="MainTabs">{() => <WebSocketProvider><MainTabs /></WebSocketProvider>}</Stack.Screen>
           <Stack.Screen name="Profile" component={ProfileScreen} options={{headerShown: false, presentation: 'modal'}} />
+          <Stack.Screen name="Notifications" component={NotificationsScreen} options={{headerShown: false, presentation: 'modal'}} />
           <Stack.Screen name="DeviceOnboarding" component={DeviceOnboardingScreen} />
         </>
       ) : (
@@ -101,6 +112,8 @@ const styles = StyleSheet.create({
   glassGradient: {position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 40},
   glassHighlight: {position: 'absolute', top: 0, left: 0, right: 0, height: '45%', borderRadius: 40, borderTopLeftRadius: 40, borderTopRightRadius: 40},
   glassBorder: {position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 40, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.5)'},
-  iconContainer: {width: iconContainerSize, height: iconContainerSize, borderRadius: iconContainerSize / 2, justifyContent: 'center', alignItems: 'center', backgroundColor: 'transparent'},
+  iconContainer: {width: iconContainerSize, height: iconContainerSize, borderRadius: iconContainerSize / 2, justifyContent: 'center', alignItems: 'center', backgroundColor: 'transparent', position: 'relative'},
   iconContainerActive: {backgroundColor: Colors.primaryGreen, shadowColor: Colors.primaryGreen, shadowOffset: {width: 0, height: 4}, shadowOpacity: 0.4, shadowRadius: 8, elevation: 8},
+  tabBadge: {position: 'absolute', top: -2, right: -2, minWidth: 16, height: 16, borderRadius: 8, backgroundColor: Colors.statusRed, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: '#FFFFFF'},
+  tabBadgeText: {fontSize: 8, fontWeight: '800', color: '#fff', lineHeight: 10},
 });

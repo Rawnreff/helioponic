@@ -2,6 +2,7 @@ export type RootStackParamList = {
   Auth: undefined;
   MainTabs: {deviceId?: string};
   Profile: undefined;
+  Notifications: undefined;
   DeviceOnboarding: undefined;
 };
 

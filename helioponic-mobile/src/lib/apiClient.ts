@@ -74,7 +74,7 @@ export const sensorsApi = {
   history: (from: string, to: string, deviceId?: string, limit = 200) =>
     request<{data: any[]; count: number}>('/sensors/history', {params: {from_date: from, to_date: to, limit, device_id: deviceId}}),
   postReading: (data: {device_id: string; ts: number; jarak_cm: number; tds_value: number; current_ph: number; pompa1: 0 | 1; pompa2: 0 | 1}) =>
-    request<{status: string; message: string; pumps_applied: {pompa1: number; pompa2: number}}>('/sensors/reading', {method: 'POST', body: data}),
+    request<{status: string; message: string; pumps_reported: {pompa1: number; pompa2: number}}>('/sensors/reading', {method: 'POST', body: data}),
 };
 
 export const energyApi = {
@@ -100,4 +100,38 @@ export const automationApi = {
     request<{device_id: string; auto_enabled: boolean; rule_ph: boolean; rule_tds: boolean; rule_water: boolean; updated_at: string | null}>('/devices/automation', {params: {device_id: deviceId}}),
   update: (data: {device_id: string; auto_enabled: boolean; rule_ph: boolean; rule_tds: boolean; rule_water: boolean}) =>
     request<{device_id: string; auto_enabled: boolean; rule_ph: boolean; rule_tds: boolean; rule_water: boolean; updated_at: string}>('/devices/automation', {method: 'PUT', body: data}),
+};
+
+// ─── Night Mode API ───────────────────────────────────
+export const nightModeApi = {
+  activate: (deviceId: string) =>
+    request<{success: boolean; message: string; device_id: string; activated_at: string}>(
+      '/night-mode/activate',
+      {method: 'POST', body: {device_id: deviceId}},
+    ),
+  deactivate: (deviceId: string) =>
+    request<{success: boolean; message: string; device_id: string; deactivated_at: string}>(
+      '/night-mode/deactivate',
+      {method: 'POST', body: {device_id: deviceId}},
+    ),
+  status: (deviceId: string) =>
+    request<import('../types/api').NightModeStatusResponse>(
+      '/night-mode/status',
+      {params: {device_id: deviceId}},
+    ),
+};
+
+// ─── Notifications API ────────────────────────────────
+export const notificationsApi = {
+  list: (deviceId?: string, unreadOnly?: boolean, limit?: number) =>
+    request<{data: import('../types/api').NotificationData[]; count: number}>('/notifications', {
+      params: {device_id: deviceId, unread_only: unreadOnly ? 'true' : undefined, limit},
+    }),
+  markRead: (notificationId: string) =>
+    request<{status: string; notification_id: string}>(`/notifications/${notificationId}/read`, {method: 'PATCH'}),
+  markAllRead: (deviceId?: string) =>
+    request<{status: string; marked_count: number}>('/notifications/read-all', {
+      method: 'PATCH',
+      params: {device_id: deviceId},
+    }),
 };
