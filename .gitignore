@@ -9,15 +9,14 @@
 *.secret.*
 **/secrets.h
 guides/
+helioponic-files/
 .rules
+mcp-config.json
 DIRECTORY TREE.md
-helioponic-mobile-vs-backend.md
 PRD.md
 SCHEMA.md
 SKILLS.md
 SYSTEM ARCHITECTURE.md
-FEATURES_AUDIT.md
-mcp-config.json
 
 # ---- IDE & Editors ----
 .vscode/
@@ -94,6 +93,7 @@ helioponic-mobile/e2e/
 # ---- Firmware (helioponic-firmware/) ----
 helioponic-firmware/arduino_uno/build/
 helioponic-firmware/esp32/build/
+helioponic-firmware/esp32/helioponic_esp32.ino     # local version with real credentials
 helioponic-firmware/**/secrets.h
 
 # ---- Generated/Logs ----

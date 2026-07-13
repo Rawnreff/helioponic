@@ -41,8 +41,12 @@ services:
       - ./mosquitto/config:/mosquitto/config:ro
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
+    # Custom entrypoint: generates password file inside container first
+    # (host-mounted files on Windows get 0777 permissions, which Mosquitto rejects)
+    entrypoint: ["/bin/sh", "/mosquitto/config/init-passwd.sh"]
+    command: ["mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]
     healthcheck:
-      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/broker/uptime' -C 1 -W 3 || exit 1"]
+      test: ["CMD-SHELL", "mosquitto_sub -u helioponic -P helioponic_mqtt_2024 -t '$$SYS/broker/uptime' -C 1 -W 3 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -63,6 +67,8 @@ services:
       MONGO_DB_NAME: helioponic
       MQTT_BROKER: mosquitto
       MQTT_PORT: 1883
+      MQTT_USERNAME: helioponic
+      MQTT_PASSWORD: helioponic_mqtt_2024
       SERVER_PORT: 8000
       LOG_LEVEL: info
       JWT_SECRET: change-me-in-production
