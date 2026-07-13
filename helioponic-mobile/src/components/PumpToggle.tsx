@@ -1,5 +1,6 @@
 import React from 'react';
 import {View, Text, Switch, StyleSheet} from 'react-native';
+import {Ionicons} from '@expo/vector-icons';
 import {Colors, Shadows} from '../context/ThemeContext';
 
 interface Props {label: string; icon: string; isActive: boolean; activeColor?: string; onToggle: (value: boolean) => void}
@@ -7,7 +8,7 @@ interface Props {label: string; icon: string; isActive: boolean; activeColor?: s
 export function PumpToggle({label, icon, isActive, activeColor = Colors.accentGreen, onToggle}: Props) {
   return (
     <View style={styles.card}>
-      <Text style={[styles.icon, {color: isActive ? activeColor : Colors.textHint}]}>{icon}</Text>
+      <Ionicons name={icon as any} size={20} color={isActive ? activeColor : Colors.textHint} />
       <Text style={styles.label} numberOfLines={1}>{label}</Text>
       <Switch value={isActive} onValueChange={onToggle} trackColor={{false: Colors.cardBorder, true: activeColor + '60'}} thumbColor={isActive ? activeColor : '#ccc'} />
     </View>
