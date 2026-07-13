@@ -173,11 +173,14 @@ async def delete_account(
     if device_ids:
         # Delete all sensor records for user's devices
         await db.sensor_logs.delete_many({"device_id": {"$in": device_ids}})
+        # Delete device configs (thresholds + automation rules) for user's devices
+        await db.device_configs.delete_many({"device_id": {"$in": device_ids}})
+        # Delete energy records for user's devices
+        await db.energy_records.delete_many({"device_id": {"$in": device_ids}})
+        # Delete water records for user's devices
+        await db.water_records.delete_many({"device_id": {"$in": device_ids}})
         # Delete devices
         await db.devices.delete_many({"user_id": user_id})
-
-    # Delete thresholds (global)
-    await db.thresholds.delete_many({})
 
     # Delete the user
     await db.users.delete_one({"_id": ObjectId(user_id)})

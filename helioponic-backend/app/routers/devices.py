@@ -118,8 +118,7 @@ async def get_device_config(
     """Return the current device configuration thresholds.
 
     Returns default values if no configuration has been saved yet.
-    Defaults match the raw firmware's initial JARAK_ON=105, JARAK_OFF=95,
-    TDS_ON=105, TDS_OFF=95.
+    Defaults: jarak_on=5, jarak_off=2 for 7cm tank depth.
     """
     config = await db.device_configs.find_one(
         {"device_id": device_id},
@@ -128,8 +127,8 @@ async def get_device_config(
     if not config:
         return {
             "device_id": device_id,
-            "jarak_on": 105,
-            "jarak_off": 95,
+            "jarak_on": 5,
+            "jarak_off": 2,
             "tds_on": 105.0,
             "tds_off": 95.0,
             "updated_at": None,
@@ -137,8 +136,8 @@ async def get_device_config(
 
     return {
         "device_id": config.get("device_id", device_id),
-        "jarak_on": config.get("jarak_on", 105),
-        "jarak_off": config.get("jarak_off", 95),
+        "jarak_on": config.get("jarak_on", 5),
+        "jarak_off": config.get("jarak_off", 2),
         "tds_on": config.get("tds_on", 105.0),
         "tds_off": config.get("tds_off", 95.0),
         "updated_at": config.get("updated_at").isoformat() if config.get("updated_at") else None,
@@ -226,8 +225,8 @@ async def update_automation_rules(
         )
     else:
         update_data["device_id"] = device_id
-        update_data["jarak_on"] = 105
-        update_data["jarak_off"] = 95
+        update_data["jarak_on"] = 5
+        update_data["jarak_off"] = 2
         update_data["tds_on"] = 105.0
         update_data["tds_off"] = 95.0
         await db.device_configs.insert_one(update_data)
