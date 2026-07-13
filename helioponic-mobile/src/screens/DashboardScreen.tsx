@@ -10,23 +10,31 @@ import {PumpToggle} from '../components/PumpToggle';
 import {EnergyDonutChart} from '../components/EnergyDonutChart';
 import {WaterWaveWidget} from '../components/WaterWaveWidget';
 import {SectionHeader} from '../components/SectionHeader';
-import {energyApi, waterApi, actuatorApi} from '../lib/apiClient';
+import {energyApi, waterApi, actuatorApi, notificationsApi} from '../lib/apiClient';
 import {Colors, Shadows} from '../context/ThemeContext';
+import {useNotificationStore} from '../store/notificationStore';
+import {useNightModeStore} from '../store/nightModeStore';
+import {nightModeApi} from '../lib/apiClient';
 
 function computeWaterPct(jarakCm: number): number {
-  if (jarakCm >= 400 || jarakCm <= 0) return 0;
-  // Match backend WaterCalculator: tank height 30cm
-  // water_level_pct = ((TANK_HEIGHT_CM - jarak_cm) / TANK_HEIGHT_CM) * 100
-  const TANK_HEIGHT_CM = 30;
-  const waterDepth = TANK_HEIGHT_CM - Math.min(jarakCm, TANK_HEIGHT_CM);
-  return Math.max(0, Math.min(100, (waterDepth / TANK_HEIGHT_CM) * 100));
+  if (jarakCm >= 999 || jarakCm < 0) return 0;
+  // Match backend WaterCalculator: tank depth 7cm
+  // water_level_pct = ((TANK_DEPTH_CM - jarak_cm) / TANK_DEPTH_CM) × 100
+  // Examples:
+  //   jarak_cm = 0  → 100% (tank full)
+  //   jarak_cm = 3.5 → 50% (half full)
+  //   jarak_cm = 7  → 0% (empty)
+  //   jarak_cm > 7  → 0% (sensor error)
+  const TANK_DEPTH_CM = 7;
+  const waterDepth = TANK_DEPTH_CM - Math.min(jarakCm, TANK_DEPTH_CM);
+  return Math.max(0, Math.min(100, (waterDepth / TANK_DEPTH_CM) * 100));
 }
 
 const EnergyWaterCards = React.memo(function EnergyWaterCards({activeDeviceId, reading}: {activeDeviceId: string; reading: any}) {
   const [energy, setEnergy] = useState<any>(null);
   const [water, setWater] = useState<any>(null);
   const fetchSummaries = useCallback(async () => {
-    try {const [e, w] = await Promise.all([energyApi.summary(activeDeviceId), waterApi.summary(activeDeviceId)]); setEnergy(e); setWater(w);} catch {}
+    try {const [e, w] = await Promise.all([energyApi.summary(activeDeviceId), waterApi.summary(activeDeviceId)]); setEnergy(e); setWater(w);} catch (err) {console.warn('[EnergyWater] fetch failed:', (err as any)?.message || err)}
   }, [activeDeviceId]);
   useEffect(() => {fetchSummaries(); const interval = setInterval(fetchSummaries, 5000); return () => clearInterval(interval);}, [fetchSummaries]);
 
@@ -53,15 +61,14 @@ const EnergyWaterCards = React.memo(function EnergyWaterCards({activeDeviceId, r
       <View style={[styles.halfCard, {backgroundColor: Colors.waterBg}]}>
         <View style={styles.halfCardHeader}>
           <View style={[styles.miniIcon, {backgroundColor: Colors.waterTeal + '25'}]}><Ionicons name="water" size={14} color={Colors.waterTeal} /></View>
-          <Text style={styles.halfCardTitle}>Water</Text>
+          <Text style={styles.halfCardTitle}>Water Level</Text>
         </View>
         <View style={styles.waveContainer}>
-          <WaterWaveWidget percentage={computeWaterPct(reading?.jarak_cm ?? 999)} size={100} />
+          <WaterWaveWidget percentage={computeWaterPct(reading?.jarak_cm ?? 999) / 100} size={100} />
         </View>
         {water && (
           <View style={styles.waterStats}>
-            <View style={styles.waterStatRow}><Text style={styles.waterStatLabel}>Water Level</Text><Text style={styles.waterStatValue}>{water.water_level_pct?.toFixed(0) ?? '0'}%</Text></View>
-            <View style={styles.waterStatRow}><Text style={styles.waterStatLabel}>Distance</Text><Text style={styles.waterStatValue}>{water.jarak_cm ?? 0} cm</Text></View>
+            <View style={styles.waterStatRow}><Text style={styles.waterStatLabel}>Tank Depth</Text><Text style={styles.waterStatValue}>7 cm</Text></View>
           </View>
         )}
       </View>
@@ -70,30 +77,84 @@ const EnergyWaterCards = React.memo(function EnergyWaterCards({activeDeviceId, r
 });
 
 export default function DashboardScreen({navigation}: any) {
-  const {state, activeDeviceId, switchDevice} = useAuth();
+  const {state, activeDeviceId} = useAuth();
   const latestReading = useSensorStore((s) => s.latestReading);
   const isConnected = useSensorStore((s) => s.isConnected);
+  const setLatestReading = useSensorStore((s) => s.setLatestReading);
   const [refreshing, setRefreshing] = useState(false);
-  const [deviceDropdown, setDeviceDropdown] = useState(false);
   const [controlExpanded, setControlExpanded] = useState(false);
   const [optimisticPumps, setOptimisticPumps] = useState<Record<string, number>>({});
+  const [optimisticTimestamps, setOptimisticTimestamps] = useState<Record<string, number>>({});
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  const unreadCount = useNotificationStore((s) => s.unreadCount);
+  const setUnreadCount = useNotificationStore((s) => s.setUnreadCount);
+  const nightModeActive = useNightModeStore((s) => s.active);
+  const setNightStatus = useNightModeStore((s) => s.setStatus);
 
-  useEffect(() => {Animated.timing(fadeAnim, {toValue: 1, duration: 800, useNativeDriver: true}).start();}, []);
+  useEffect(() => {
+    Animated.timing(fadeAnim, {toValue: 1, duration: 800, useNativeDriver: true}).start();
+  }, []);
 
-  const onRefresh = useCallback(async () => {setRefreshing(true); await new Promise((r) => setTimeout(r, 800)); setRefreshing(false);}, []);
+  // Fetch notification unread count + night mode status periodically
+  useEffect(() => {
+    const fetchStatuses = async () => {
+      try {
+        const [notifRes, nmStatus] = await Promise.all([
+          notificationsApi.list(activeDeviceId, true, 1),
+          nightModeApi.status(activeDeviceId),
+        ]);
+        if (notifRes.count !== undefined) setUnreadCount(notifRes.count);
+        setNightStatus(nmStatus);
+      } catch (err) { console.warn('[Dashboard] status fetch failed:', (err as any)?.message || err) }
+    };
+    fetchStatuses();
+    const interval = setInterval(fetchStatuses, 30000);
+    return () => clearInterval(interval);
+  }, [activeDeviceId, setUnreadCount, setNightStatus]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await new Promise((r) => setTimeout(r, 800));
+    setRefreshing(false);
+  }, []);
 
   const handlePumpToggle = useCallback(async (pump: string, s: 0 | 1) => {
+    const now = Date.now();
     setOptimisticPumps((prev) => ({...prev, [pump]: s}));
-    try {await actuatorApi.controlPump(pump, s, activeDeviceId);} catch {setOptimisticPumps((prev) => ({...prev, [pump]: s === 1 ? 0 : 1}));}
-  }, [activeDeviceId]);
+    setOptimisticTimestamps((prev) => ({...prev, [pump]: now}));
+    
+    try {
+      await actuatorApi.controlPump(pump, s, activeDeviceId);
+      // Immediately update store so UI stays in sync even without WS broadcast
+      const current = useSensorStore.getState().latestReading;
+      if (current) setLatestReading({...current, [pump]: s});
+    } catch (err) {
+      console.warn('[Dashboard] pump toggle failed:', (err as any)?.message || err);
+      setOptimisticPumps((prev) => ({...prev, [pump]: s === 1 ? 0 : 1}));
+    }
+  }, [activeDeviceId, setLatestReading]);
 
   const reading = latestReading;
   const effectivePumps = {pompa1: optimisticPumps.pompa1 ?? reading?.pompa1 ?? 0, pompa2: optimisticPumps.pompa2 ?? reading?.pompa2 ?? 0};
 
   useEffect(() => {
-    if (reading) setOptimisticPumps((prev) => {const merged = {...prev}; if (prev.pompa1 !== undefined && prev.pompa1 === reading.pompa1) delete merged.pompa1; if (prev.pompa2 !== undefined && prev.pompa2 === reading.pompa2) delete merged.pompa2; return merged;});
-  }, [reading?.pompa1, reading?.pompa2]);
+    if (reading) {
+      const now = Date.now();
+      setOptimisticPumps((prev) => {
+        const merged = {...prev};
+        
+        // Only cleanup if optimistic state is older than 2.5 seconds (allow hardware execution delay)
+        if (prev.pompa1 !== undefined && now - (optimisticTimestamps.pompa1 ?? 0) > 2500) {
+          if (prev.pompa1 === reading.pompa1) delete merged.pompa1;
+        }
+        if (prev.pompa2 !== undefined && now - (optimisticTimestamps.pompa2 ?? 0) > 2500) {
+          if (prev.pompa2 === reading.pompa2) delete merged.pompa2;
+        }
+        
+        return merged;
+      });
+    }
+  }, [reading?.pompa1, reading?.pompa2, optimisticTimestamps]);
 
   const hour = useMemo(() => new Date().getHours(), []);
   const greeting = hour < 12 ? 'Good Morning' : hour < 17 ? 'Good Afternoon' : 'Good Evening';
@@ -108,24 +169,26 @@ export default function DashboardScreen({navigation}: any) {
           <LinearGradient colors={[Colors.primaryGreen, Colors.deepGreen]} start={{x: 0, y: 0}} end={{x: 1, y: 1}} style={styles.heroGradient}>
             <View style={styles.heroDecorativeCircle1} /><View style={styles.heroDecorativeCircle2} />
             <View style={styles.heroHeaderBar}>
-              <TouchableOpacity style={styles.deviceSelector} onPress={() => setDeviceDropdown(!deviceDropdown)}>
+              <View style={styles.deviceSelector}>
                 <Ionicons name="hardware-chip" size={14} color="rgba(255,255,255,0.7)" />
                 <Text style={styles.deviceText} numberOfLines={1}>{state.devices.find((d) => d.deviceId === activeDeviceId)?.name || activeDeviceId}</Text>
-                <Ionicons name={deviceDropdown ? 'chevron-up' : 'chevron-down'} size={14} color="#fff" />
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.profileBtn} onPress={() => navigation?.navigate('Profile')}><Ionicons name="person" size={18} color="#fff" /></TouchableOpacity>
-            </View>
-            {deviceDropdown && state.devices.length > 1 && (
-              <View style={styles.dropdown}>
-                {state.devices.map((d) => (
-                  <TouchableOpacity key={d.deviceId} style={[styles.dropdownItem, d.deviceId === activeDeviceId && styles.dropdownItemActive]} onPress={() => {switchDevice(d.deviceId); setDeviceDropdown(false);}}>
-                    <Ionicons name="hardware-chip" size={16} color={d.deviceId === activeDeviceId ? Colors.primaryGreen : Colors.textHint} />
-                    <Text style={[styles.dropdownText, d.deviceId === activeDeviceId && {color: Colors.primaryGreen, fontWeight: '700'}]}>{d.name || d.deviceId}</Text>
-                    {d.deviceId === activeDeviceId && <Ionicons name="checkmark-circle" size={16} color={Colors.primaryGreen} />}
-                  </TouchableOpacity>
-                ))}
               </View>
-            )}
+              <TouchableOpacity
+                  style={styles.notifBtn}
+                  onPress={() => navigation?.navigate('Notifications')}
+                >
+                  <Ionicons name="notifications-outline" size={18} color="#fff" />
+                  {unreadCount > 0 && (
+                    <View style={styles.notifBadge}>
+                      <Text style={styles.notifBadgeText}>
+                        {unreadCount > 99 ? '99+' : unreadCount}
+                      </Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.profileBtn} onPress={() => navigation?.navigate('Profile')}><Ionicons name="person" size={18} color="#fff" /></TouchableOpacity>
+            </View>
+
             <View style={styles.heroContent}>
               <View style={styles.heroGreetingContainer}>
                 <View style={styles.heroGreetingBadge}><Text style={styles.heroGreeting}>{greeting}</Text></View>
@@ -142,6 +205,12 @@ export default function DashboardScreen({navigation}: any) {
                 <View style={[styles.heroBadgeDot, {backgroundColor: isConnected ? Colors.statusGreen : Colors.statusOrange}]} />
                 <Text style={styles.heroBadgeText}>{isConnected ? 'System Online' : 'Offline'}</Text>
               </View>
+              {nightModeActive && (
+                <View style={[styles.heroBadge, {backgroundColor: 'rgba(55,71,79,0.4)'}]}>
+                  <Ionicons name="moon" size={12} color="#fff" />
+                  <Text style={styles.heroBadgeText}>Night Mode</Text>
+                </View>
+              )}
             </View>
           </LinearGradient>
         </View>
@@ -162,7 +231,8 @@ export default function DashboardScreen({navigation}: any) {
               <View style={styles.progressBar}>
                 <LinearGradient colors={[Colors.accentGreen, Colors.primaryGreen]} start={{x: 0, y: 0}} end={{x: 1, y: 0}} style={[styles.progressFill, {width: `${Math.min(100, ((reading.current_ph ?? 7) / 14) * 100)}%`}]} />
               </View>
-              <Text style={styles.progressText}>pH {reading.current_ph?.toFixed(1) ?? '--'} — Jarak {reading.jarak_cm ?? '--'} cm</Text>
+              <Text style={styles.progressText}>pH {reading.current_ph?.toFixed(1) ?? '--'} — Water
+                 {Math.round(computeWaterPct(reading.jarak_cm))}%</Text>
             </View>
           )}
         </Animated.View>
@@ -170,7 +240,6 @@ export default function DashboardScreen({navigation}: any) {
         <View style={styles.sensorGrid}>
           <SensorStatusCard title="pH Level" value={reading?.current_ph?.toFixed(1) ?? '--'} icon="flask" colors={['#1976D2', '#42A5F5'] as const} />
           <SensorStatusCard title="TDS" value={reading?.tds_value?.toFixed(0) ?? '--'} unit="ppm" icon="water" colors={['#EF6C00', '#FFA726'] as const} />
-          <SensorStatusCard title="Distance" value={reading ? String(reading.jarak_cm) : '--'} unit="cm" icon="water-outline" colors={['#00897B', '#26A69A'] as const} />
         </View>
 
         <EnergyWaterCards activeDeviceId={activeDeviceId} reading={reading} />
@@ -187,8 +256,8 @@ export default function DashboardScreen({navigation}: any) {
             <View style={styles.pumpsSection}>
               <Text style={styles.pumpsSectionHint}>Tap a pump to toggle ON/OFF</Text>
               <View style={styles.pumpsGrid}>
-                <PumpToggle label="Pompa 1 (Circ)" icon="🔄" isActive={effectivePumps.pompa1 === 1} activeColor={Colors.accentGreen} onToggle={(v) => handlePumpToggle('pompa1', v ? 1 : 0)} />
-                <PumpToggle label="Pompa 2 (pH)" icon="💧" isActive={effectivePumps.pompa2 === 1} activeColor={Colors.tempBlue} onToggle={(v) => handlePumpToggle('pompa2', v ? 1 : 0)} />
+                <PumpToggle label="Pompa 1 (Circ)" icon="sync" isActive={effectivePumps.pompa1 === 1} activeColor={Colors.accentGreen} onToggle={(v) => handlePumpToggle('pompa1', v ? 1 : 0)} />
+                <PumpToggle label="Pompa 2 (pH)" icon="water" isActive={effectivePumps.pompa2 === 1} activeColor={Colors.tempBlue} onToggle={(v) => handlePumpToggle('pompa2', v ? 1 : 0)} />
               </View>
             </View>
           )}
@@ -215,7 +284,7 @@ export default function DashboardScreen({navigation}: any) {
           <TouchableOpacity activeOpacity={0.7} style={styles.activityItem} onPress={() => navigation?.navigate('Analytics')}>
             <View style={styles.activityIcon}><LinearGradient colors={[Colors.waterTeal, Colors.waterLight] as const} start={{x: 0, y: 0}} end={{x: 1, y: 1}} style={styles.activityIconGradient}><Ionicons name="water" size={16} color="#FFF" /></LinearGradient></View>
             <View style={styles.activityContent}>
-              <View style={styles.activityTitleRow}><Text style={styles.activityTitle}>Distance {reading?.jarak_cm ?? '--'}cm</Text><View style={[styles.activityStatusBadge, {backgroundColor: Colors.waterTeal + '20'}]}><View style={[styles.activityStatusDot, {backgroundColor: Colors.waterTeal}]} /></View></View>
+              <View style={styles.activityTitleRow}><Text style={styles.activityTitle}>Water Level {reading ? Math.round(computeWaterPct(reading.jarak_cm)) : '--'}%</Text><View style={[styles.activityStatusBadge, {backgroundColor: Colors.waterTeal + '20'}]}><View style={[styles.activityStatusDot, {backgroundColor: Colors.waterTeal}]} /></View></View>
               <View style={styles.activityTimeRow}><Ionicons name="time-outline" size={12} color="#8F9BB3" /><Text style={styles.activityTime}>{reading?.ts ? new Date(reading.ts * 1000).toLocaleTimeString() : 'Recently'}</Text></View>
             </View>
             <Ionicons name="chevron-forward" size={18} color="#B0B8C5" />
@@ -226,7 +295,7 @@ export default function DashboardScreen({navigation}: any) {
           <View style={[styles.updateDot, {backgroundColor: isConnected ? Colors.statusGreen : Colors.statusOrange}]} />
           <Text style={styles.lastUpdateText}>Last synced: {reading?.ts ? new Date(reading.ts * 1000).toLocaleTimeString() : 'Just now'}</Text>
         </View>
-        <View style={{height: 100}} />
+        <View style={{height: 120}} />
       </ScrollView>
     </SafeAreaView>
   );
@@ -244,12 +313,8 @@ const styles = StyleSheet.create({
   deviceSelector: {flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8},
   deviceText: {color: '#fff', fontSize: 13, fontWeight: '600', flex: 1},
   profileBtn: {width: 34, height: 34, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center'},
-  dropdown: {backgroundColor: Colors.surface, borderRadius: 16, padding: 4, marginTop: 4, ...Shadows.card, zIndex: 20},
-  dropdownItem: {flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12, paddingHorizontal: 12, borderRadius: 12},
-  dropdownItemActive: {backgroundColor: Colors.paleGreen},
-  dropdownText: {fontSize: 14, fontWeight: '500', color: Colors.textPrimary, flex: 1},
   heroContent: {position: 'relative', zIndex: 1, marginTop: 8},
-  heroGreetingContainer: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12},
+  heroGreetingContainer: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 7, marginTop: 3},
   heroGreetingBadge: {backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)'},
   heroGreeting: {fontSize: 13, color: '#FFFFFF', fontWeight: '700', letterSpacing: 0.5},
   heroTime: {fontSize: 13, color: 'rgba(255,255,255,0.9)', fontWeight: '600', letterSpacing: 1},
@@ -257,6 +322,20 @@ const styles = StyleSheet.create({
   heroSubtitleContainer: {flexDirection: 'row', alignItems: 'center', gap: 8},
   heroIconBadge: {width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center'},
   heroSubtitle: {fontSize: 15, color: 'rgba(255,255,255,0.95)', fontWeight: '600', letterSpacing: 0.3},
+  notifBtn: {
+    width: 34, height: 34, borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center', justifyContent: 'center',
+    position: 'relative',
+  },
+  notifBadge: {
+    position: 'absolute', top: -4, right: -4,
+    minWidth: 18, height: 18, borderRadius: 9,
+    backgroundColor: Colors.statusRed,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 2, borderColor: Colors.primaryGreen,
+  },
+  notifBadgeText: {fontSize: 9, fontWeight: '800', color: '#fff', lineHeight: 12},
   heroBadgeRow: {flexDirection: 'row', gap: 8, marginTop: 16},
   heroBadge: {flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16},
   heroBadgeDot: {width: 6, height: 6, borderRadius: 3},

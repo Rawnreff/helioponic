@@ -5,10 +5,18 @@ import {LinearGradient} from 'expo-linear-gradient';
 import {Ionicons} from '@expo/vector-icons';
 import {useSensorStore} from '../store/sensorStore';
 import {Colors, Shadows} from '../context/ThemeContext';
-import {WS_URL, CAMERA_POLL_MS} from '../constants';
+import {API_URL, CAMERA_POLL_MS} from '../constants';
 import {SectionHeader} from '../components/SectionHeader';
 import {SensorStatusCard} from '../components/SensorStatusCard';
 import {PumpStateCard} from '../components/PumpStateCard';
+
+// Water level percentage calculator
+function computeWaterPct(jarakCm: number): number {
+  if (jarakCm >= 999 || jarakCm < 0) return 0;
+  const TANK_DEPTH_CM = 7;
+  const waterDepth = TANK_DEPTH_CM - Math.min(jarakCm, TANK_DEPTH_CM);
+  return Math.max(0, Math.min(100, (waterDepth / TANK_DEPTH_CM) * 100));
+}
 
 function HealthIndicator({label, status, value, threshold, color, icon}: {
   label: string; status: 'good' | 'warning' | 'critical' | 'waiting'; value: string; threshold: string; color: string; icon: string;
@@ -51,9 +59,9 @@ export default function PIDScreen() {
         <View style={styles.section}>
           <SectionHeader icon="speedometer" colors={[Colors.tempBlue, '#42A5F5'] as const} title="Sensor Dashboard" badge={isConnected ? 'LIVE' : undefined} dotColor={isConnected ? Colors.statusGreen : undefined} textColor={isConnected ? Colors.deepGreen : undefined} bgColor={isConnected ? Colors.paleGreen : undefined} />
           <View style={styles.sensorGrid}>
-            <SensorStatusCard title="pH Level" value={reading?.current_ph?.toFixed(1) ?? '--'} icon="flask" colors={['#1976D2', '#42A5F5'] as const} />
-            <SensorStatusCard title="TDS" value={reading?.tds_value?.toFixed(0) ?? '--'} unit="ppm" icon="water" colors={['#EF6C00', '#FFA726'] as const} />
-            <SensorStatusCard title="Distance" value={reading ? `${reading.jarak_cm} cm` : '--'} unit="0-400cm" icon="water" colors={['#00897B', '#4DB6AC'] as const} />
+            <SensorStatusCard title="pH Level" value={reading?.current_ph?.toFixed(1) ?? '--'} icon="flask" colors={['#1976D2', '#42A5F5'] as const} variant="full" />
+            <SensorStatusCard title="TDS" value={reading?.tds_value?.toFixed(0) ?? '--'} unit="ppm" icon="water" colors={['#EF6C00', '#FFA726'] as const} variant="full" />
+            <SensorStatusCard title="Water Level" value={reading ? String(Math.round(computeWaterPct(reading.jarak_cm))) : '--'} unit="%" icon="water" colors={['#00897B', '#4DB6AC'] as const} variant="full" />
           </View>
         </View>
 
@@ -69,14 +77,14 @@ export default function PIDScreen() {
           <SectionHeader icon="pulse" colors={[Colors.primaryGreen, Colors.deepGreen] as const} title="Component Health" />
           <HealthIndicator label="pH Sensor" status={!reading ? 'waiting' : reading.current_ph >= 4 && reading.current_ph <= 8 ? 'good' : 'critical'} value={reading ? `${reading.current_ph?.toFixed(1) ?? '--'}` : 'Waiting'} threshold="Range: 4.0 - 8.0" color={Colors.tempBlue} icon="flask" />
           <HealthIndicator label="TDS Sensor" status={!reading ? 'waiting' : reading.tds_value > 0 ? 'good' : 'warning'} value={reading ? `${reading.tds_value?.toFixed(0) ?? '--'} ppm` : 'Waiting'} threshold="Target: 0 - 2000 ppm" color={Colors.energyOrange} icon="water" />
-          <HealthIndicator label="Ultrasonic" status={!reading ? 'waiting' : reading.jarak_cm < 400 && reading.jarak_cm > 0 ? 'good' : 'critical'} value={reading ? `${reading.jarak_cm ?? '--'} cm` : 'Waiting'} threshold="Range: 2 - 400 cm" color={Colors.waterTeal} icon="water" />
+          <HealthIndicator label="Ultrasonic" status={!reading ? 'waiting' : reading.jarak_cm < 999 && reading.jarak_cm >= 0 ? 'good' : 'critical'} value={reading ? `${Math.round(computeWaterPct(reading.jarak_cm))}%` : 'Waiting'} threshold="Tank depth: 7 cm" color={Colors.waterTeal} icon="water" />
           <HealthIndicator label="Relay Pumps" status={!reading ? 'waiting' : 'good'} value={`P1:${reading?.pompa1 ?? '?'} P2:${reading?.pompa2 ?? '?'}`} threshold="2/2 relays responding" color={Colors.accentGreen} icon="options" />
         </View>
 
         <View style={styles.section}>
           <SectionHeader icon="camera" colors={[Colors.primaryGreen, Colors.deepGreen] as const} title="AI Vision Feed" badge={cameraError ? 'Offline' : 'Streaming'} dotColor={cameraError ? Colors.statusRed : Colors.statusGreen} textColor={cameraError ? Colors.statusRed : Colors.deepGreen} bgColor={cameraError ? '#FFEBEE' : Colors.tempLight} />
           <View style={styles.cameraFrame}>
-            <Image source={{uri: `${WS_URL.replace('/ws/pid', '/api/v1')}/camera/live?t=${cameraTick}`}} style={styles.cameraImage} onError={() => setCameraError(true)} />
+            <Image source={{uri: `${API_URL}/camera/live?t=${cameraTick}`}} style={styles.cameraImage} onError={() => setCameraError(true)} />
             {cameraError && (
               <View style={styles.cameraFallback}><Ionicons name="videocam-off" size={40} color={Colors.textHint} /><Text style={{fontSize: 15, fontWeight: '700', color: Colors.textPrimary}}>Camera Offline</Text><Text style={{fontSize: 11, color: Colors.textSecondary}}>Unable to connect to AI camera feed</Text></View>
             )}
@@ -104,8 +112,8 @@ const diagStyles = StyleSheet.create({
 
 const styles = StyleSheet.create({
   container: {flex: 1, backgroundColor: Colors.background},
-  content: {paddingBottom: 32},
-  header: {flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 4},
+  content: {paddingBottom: 100},
+  header: {flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 4, marginBottom: 10},
   headerIcon: {borderRadius: 14, overflow: 'hidden', ...Shadows.subtle},
   headerIconGradient: {width: 44, height: 44, justifyContent: 'center', alignItems: 'center'},
   headerTitle: {fontSize: 22, fontWeight: '800', color: Colors.textPrimary, letterSpacing: -0.5},
@@ -114,7 +122,7 @@ const styles = StyleSheet.create({
   liveDot: {width: 7, height: 7, borderRadius: 4},
   liveLabel: {fontSize: 10, fontWeight: '800', letterSpacing: 1},
   section: {backgroundColor: '#FFFFFF', marginHorizontal: 16, borderRadius: 24, padding: 20, marginBottom: 14, shadowColor: Colors.primaryGreen, shadowOffset: {width: 0, height: 8}, shadowOpacity: 0.1, shadowRadius: 20, elevation: 6, borderWidth: 1, borderColor: 'rgba(46,125,50,0.1)'},
-  sensorGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 12},
+  sensorGrid: {gap: 0},
   pumpGrid: {flexDirection: 'row', gap: 8},
   cameraFrame: {borderRadius: 16, overflow: 'hidden', aspectRatio: 16 / 9, backgroundColor: Colors.background, position: 'relative'},
   cameraImage: {width: '100%', height: '100%', resizeMode: 'cover'},

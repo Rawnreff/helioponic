@@ -173,7 +173,7 @@ export default function ProfileScreen({navigation}: any) {
 
 const styles = StyleSheet.create({
   container: {flex: 1, backgroundColor: Colors.background},
-  content: {paddingBottom: 40},
+  content: {paddingBottom: 100},
   header: {flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8},
   backBtn: {padding: 4},
   headerIcon: {borderRadius: 12, overflow: 'hidden'},
