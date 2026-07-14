@@ -29,7 +29,20 @@ async function request<T>(endpoint: string, options: RequestOptions = {}): Promi
     clearTimeout(timeoutId);
     if (response.status === 204) return {} as T;
     const data = await response.json();
-    if (!response.ok) throw new ApiError(data?.detail || data?.message || `HTTP ${response.status}`, response.status);
+    if (!response.ok) {
+      let errMsg: string;
+      if (Array.isArray(data?.detail)) {
+        // Pydantic validation errors: format each error message
+        errMsg = data.detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ');
+      } else if (typeof data?.detail === 'string') {
+        errMsg = data.detail;
+      } else if (typeof data?.message === 'string') {
+        errMsg = data.message;
+      } else {
+        errMsg = `HTTP ${response.status}`;
+      }
+      throw new ApiError(errMsg, response.status);
+    }
     return data as T;
   } catch (error) {
     clearTimeout(timeoutId);
@@ -63,9 +76,9 @@ export const devicesApi = {
 
 export const configApi = {
   get: (deviceId?: string) =>
-    request<{device_id: string; jarak_on: number; jarak_off: number; tds_on: number; tds_off: number; updated_at: string | null}>('/devices/config', {params: {device_id: deviceId}}),
-  update: (data: {device_id: string; jarak_on: number; jarak_off: number; tds_on: number; tds_off: number}) =>
-    request<{status: string; device_id: string; jarak_on: number; jarak_off: number; tds_on: number; tds_off: number; updated_at: string}>('/devices/config', {method: 'PUT', body: data}),
+    request<{device_id: string; jarak_on: number; jarak_off: number; tds_on: number; tds_off: number; ph_min: number; ph_max: number; updated_at: string | null}>('/devices/config', {params: {device_id: deviceId}}),
+  update: (data: {device_id: string; jarak_on: number; jarak_off: number; tds_on: number; tds_off: number; ph_min: number; ph_max: number}) =>
+    request<{status: string; device_id: string; jarak_on: number; jarak_off: number; tds_on: number; tds_off: number; ph_min: number; ph_max: number; updated_at: string}>('/devices/config', {method: 'PUT', body: data}),
 };
 
 export const sensorsApi = {
@@ -73,14 +86,8 @@ export const sensorsApi = {
     request<{id: string; device_id: string; recorded_at: string; jarak_cm: number; tds_value: number; current_ph: number; pompa1: 0 | 1; pompa2: 0 | 1}>('/sensors/latest', {params: {device_id: deviceId}}),
   history: (from: string, to: string, deviceId?: string, limit = 200) =>
     request<{data: any[]; count: number}>('/sensors/history', {params: {from_date: from, to_date: to, limit, device_id: deviceId}}),
-  postReading: (data: {device_id: string; ts: number; jarak_cm: number; tds_value: number; current_ph: number; pompa1: 0 | 1; pompa2: 0 | 1}) =>
+  postReading: (data: {device_id: string; ts: number; jarak_cm: number; tds_value: number; current_ph: number; pompa1?: 0 | 1; pompa2?: 0 | 1}) =>
     request<{status: string; message: string; pumps_reported: {pompa1: number; pompa2: number}}>('/sensors/reading', {method: 'POST', body: data}),
-};
-
-export const energyApi = {
-  summary: (deviceId?: string) => request<{pompa1_wh: number; pompa2_wh: number; total_wh: number}>('/energy/summary', {params: {device_id: deviceId}}),
-  history: (from: string, to: string, deviceId?: string, limit = 200) =>
-    request<{data: any[]; count: number}>('/energy/history', {params: {from_date: from, to_date: to, limit, device_id: deviceId}}),
 };
 
 export const waterApi = {
@@ -126,6 +133,10 @@ export const notificationsApi = {
   list: (deviceId?: string, unreadOnly?: boolean, limit?: number) =>
     request<{data: import('../types/api').NotificationData[]; count: number}>('/notifications', {
       params: {device_id: deviceId, unread_only: unreadOnly ? 'true' : undefined, limit},
+    }),
+  unreadCount: (deviceId?: string) =>
+    request<{unread_count: number}>('/notifications/unread-count', {
+      params: {device_id: deviceId},
     }),
   markRead: (notificationId: string) =>
     request<{status: string; notification_id: string}>(`/notifications/${notificationId}/read`, {method: 'PATCH'}),

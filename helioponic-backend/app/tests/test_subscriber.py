@@ -13,7 +13,6 @@ import pytest
 
 from app.mqtt.subscriber import MQTTSubscriber
 from app.models.sensor import SensorReading
-from app.services.energy import EnergyCalculator
 from app.services.water import WaterCalculator
 
 
@@ -44,15 +43,11 @@ class CallbackStore:
 
     def __init__(self):
         self.sensor_records = []
-        self.energy_records = []
         self.water_records = []
         self.broadcast_data = []
 
     async def save_sensor(self, record: dict):
         self.sensor_records.append(record)
-
-    async def save_energy(self, record: dict):
-        self.energy_records.append(record)
 
     async def save_water(self, record: dict):
         self.water_records.append(record)
@@ -67,12 +62,10 @@ def make_subscriber(cb: CallbackStore = None) -> tuple[MQTTSubscriber, CallbackS
         cb = CallbackStore()
 
     sub = MQTTSubscriber(
-        energy_calc=EnergyCalculator(),
         water_calc=WaterCalculator(),
         on_sensor_reading=cb.on_sensor_reading,
     )
     sub.save_sensor = cb.save_sensor
-    sub.save_energy = cb.save_energy
     sub.save_water = cb.save_water
 
     return sub, cb
@@ -99,28 +92,6 @@ class TestUplinkBasic:
         assert rec["current_ph"] == 6.5
         assert rec["pompa1"] == 1
         assert rec["pompa2"] == 0
-
-    @pytest.mark.asyncio
-    async def test_save_energy_and_water_on_second_message(self):
-        """Energy & water records saved after the first message (delta needs prev state)."""
-        sub, cb = make_subscriber()
-
-        # First call: initializes state, no energy/water saved yet
-        await sub._handle_uplink(make_uplink())
-        assert len(cb.energy_records) == 0
-        assert len(cb.water_records) == 0
-
-        # Second call: computes deltas, saves energy & water
-        # Both jarak values are within deadband, so automation preserves pump states
-        await sub._handle_uplink(make_uplink({"jarak_cm": 98, "pompa1": 1, "pompa2": 0}))
-        assert len(cb.sensor_records) == 2
-        assert len(cb.energy_records) == 1
-        assert len(cb.water_records) == 1
-
-        energy = cb.energy_records[0]
-        assert energy["pompa1_wh"] > 0  # pompa1 was ON
-        assert energy["total_wh"] == energy["pompa1_wh"] + energy["pompa2_wh"]
-        assert energy["pompa2_wh"] == 0  # pompa2 was OFF
 
     @pytest.mark.asyncio
     async def test_broadcast_callback(self):
@@ -157,76 +128,6 @@ class TestUplinkBasic:
 
         await sub._handle_uplink(payload)
         assert cb.sensor_records[0]["device_id"] == "HELIO_001"
-
-
-# ===========================================================================
-# _process_deltas — energy & water state machine
-# ===========================================================================
-
-class TestProcessDeltas:
-    """Direct tests of the delta calculation state machine."""
-
-    @pytest.mark.asyncio
-    async def test_first_message_initializes(self):
-        """First call initializes prev state, no records emitted."""
-        sub = MQTTSubscriber(EnergyCalculator(), WaterCalculator())
-        now = datetime.now(UTC)
-
-        await sub._process_deltas("HELIO_001", 15, 1, 0, now)
-
-        assert sub._initialized is True
-        assert sub._prev_jarak_cm == 15
-
-    @pytest.mark.asyncio
-    async def test_elapsed_time_capped(self):
-        """Interval > 60s is capped to INTERVAL_SECONDS."""
-        sub = MQTTSubscriber(EnergyCalculator(), WaterCalculator())
-        cb = CallbackStore()
-        sub.save_energy = cb.save_energy
-        sub.save_water = cb.save_water
-
-        now = datetime.now(UTC)
-
-        # Initialize
-        await sub._process_deltas("HELIO_001", 15, 1, 0, now)
-
-        # Second call with a huge time skip (2 hours later)
-        later = now + timedelta(hours=2)
-        await sub._process_deltas("HELIO_001", 15, 1, 0, later)
-
-        assert len(cb.energy_records) == 1
-        wh = cb.energy_records[0]["pompa1_wh"]
-        # If elapsed was capped to 1s, wh = 15W * (1/3600) ≈ 0.00417
-        # If elapsed was NOT capped (7200s), wh = 15 * (7200/3600) = 30
-        assert wh < 0.1, f"Expected capped Wh, got {wh}"
-
-    @pytest.mark.asyncio
-    async def test_consecutive_calls_produce_deltas(self):
-        """Multiple calls with different readings produce valid records."""
-        sub = MQTTSubscriber(EnergyCalculator(), WaterCalculator())
-        cb = CallbackStore()
-        sub.save_energy = cb.save_energy
-        sub.save_water = cb.save_water
-
-        base = datetime.now(UTC)
-
-        # 1st call: init
-        await sub._process_deltas("HELIO_001", 15, 1, 0, base)
-        assert len(cb.energy_records) == 0
-
-        # 2nd call: 1s later, same distance
-        t2 = base + timedelta(seconds=1)
-        await sub._process_deltas("HELIO_001", 15, 1, 0, t2)
-        assert len(cb.energy_records) == 1
-        assert len(cb.water_records) == 1
-        assert cb.water_records[0]["jarak_cm"] == 15
-
-        # 3rd call: 1s later, pompa2 turned ON
-        t3 = t2 + timedelta(seconds=1)
-        await sub._process_deltas("HELIO_001", 15, 1, 1, t3)
-        assert len(cb.energy_records) == 2
-        energy2 = cb.energy_records[1]
-        assert energy2["pompa2_wh"] > 0  # pompa2 now ON
 
 
 # ===========================================================================

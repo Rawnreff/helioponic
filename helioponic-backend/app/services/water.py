@@ -24,7 +24,7 @@ class WaterCalculator:
     # Tank cross-sectional area in cm² (default: 50cm x 50cm = 2500 cm²)
     TANK_AREA_CM2: float = 2500.0
 
-    def jarak_to_water_level_pct(self, jarak_cm: int) -> float:
+    def jarak_to_water_level_pct(self, jarak_cm: float) -> float:
         """Convert ultrasonic distance reading to water level percentage.
 
         Tank depth = 7 cm
@@ -56,8 +56,8 @@ class WaterCalculator:
 
     def calculate_water_delta(
         self,
-        prev_jarak_cm: int,
-        curr_jarak_cm: int,
+        prev_jarak_cm: float,
+        curr_jarak_cm: float,
     ) -> tuple[float, float]:
         """Calculate water level change.
 

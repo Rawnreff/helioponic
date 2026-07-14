@@ -34,13 +34,6 @@ res = api("GET", f"/sensors/history?from_date={week_start}&to_date={today_end}&d
 print(f"\n=== WEEK filter (last 7 days) ===")
 print(f"Count: {res.get('count', 0)}")
 
-# Test energy history
-res = api("GET", f"/energy/history?from_date={today_start}&to_date={today_end}&device_id=HELIO_DBG&limit=200", headers=headers)
-print(f"\n=== Energy history (today) ===")
-print(f"Count: {res.get('count', 0)}")
-for r in res.get("data", [])[:3]:
-    print(f"  {r['recorded_at']} | total_wh={r['total_wh']}")
-
 # Test water history
 res = api("GET", f"/water/history?from_date={today_start}&to_date={today_end}&device_id=HELIO_DBG&limit=200", headers=headers)
 print(f"\n=== Water history (today) ===")

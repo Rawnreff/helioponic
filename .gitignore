@@ -111,3 +111,4 @@ helioponic-firmware/**/secrets.h
 # ---- Generated/Logs ----
 *.log
 tmp/
+\nnul

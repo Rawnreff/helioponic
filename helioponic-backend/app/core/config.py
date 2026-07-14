@@ -25,10 +25,6 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me-in-production"
     jwt_expiration_hours: int = 72
 
-    # ── Hardware / Pump Power Ratings (watts) ───────────────────────────
-    pompa1_watts: float = 15.0
-    pompa2_watts: float = 15.0
-
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 

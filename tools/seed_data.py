@@ -16,9 +16,9 @@ for i in range(20):
     ph = round(random.uniform(5.5, 6.8), 1)
     tds = round(random.uniform(80, 250), 1)
     jarak = random.randint(1, 6)  # cm from sensor to water surface (0-7 tank)
-    # Pumps toggle based on thresholds
-    p1 = 1 if jarak > 5 else 0   # water refill pump on when distance > 5 (water low)
-    p2 = 1 if tds < 80 else 0     # TDS dosing pump ON when TDS low (nutrients depleted)
+    # ⚠️  Pompa states TIDAK dikirim — backend automation yg menentukan.
+    # Backend compute via evaluate_thresholds berdasarkan jarak & tds,
+    # lalu publish actuator command ke MQTT helioponic/actuator/downlink.
 
     payload = {
         "device_id": DEVICE,
@@ -26,25 +26,22 @@ for i in range(20):
         "jarak_cm": jarak,
         "tds_value": tds,
         "current_ph": ph,
-        "pompa1": p1,
-        "pompa2": p2,
     }
     readings.append(payload)
 
 # Post all readings
-print(f"Posting {len(readings)} sensor readings to {DEVICE}...")
+print(f"Posting {len(readings)} sensor readings to {DEVICE} (no pompa fields)...")
 for i, r in enumerate(readings):
     resp = httpx.post(f"{BASE}/sensors/reading", json=r, timeout=10)
     status = "OK" if resp.status_code == 200 else f"FAIL({resp.status_code})"
-    print(f"  [{i+1:2d}] pH={r['current_ph']:.1f} TDS={r['tds_value']:.0f} jarak={r['jarak_cm']}cm P1={r['pompa1']} P2={r['pompa2']} -> {status}")
+    print(f"  [{i+1:2d}] pH={r['current_ph']:.1f} TDS={r['tds_value']:.0f} jarak={r['jarak_cm']}cm -> {status}")
 
-# Also post one current reading for "latest"
+# Also post one current reading for "latest" (no pompa fields)
 latest = {
     "device_id": DEVICE, "ts": int(time.time()),
     "jarak_cm": 4, "tds_value": 175.0, "current_ph": 6.2,
-    "pompa1": 0, "pompa2": 1,
 }
 resp = httpx.post(f"{BASE}/sensors/reading", json=latest, timeout=10)
-print(f"\n  Latest: pH=6.2 TDS=175 jarak=4 P1=0 P2=1 -> {'OK' if resp.status_code==200 else f'FAIL({resp.status_code})'}")
+print(f"\n  Latest: pH=6.2 TDS=175 jarak=4 -> {'OK' if resp.status_code==200 else f'FAIL({resp.status_code})'}")
 
 print("\nDone! Check the mobile app now.")

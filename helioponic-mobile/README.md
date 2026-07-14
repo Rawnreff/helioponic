@@ -11,7 +11,6 @@
 - **P&ID Diagram** — Interactive piping diagram with animated water flow
 - **Pump Control** — Manual ON/OFF toggle for Pompa 1 & Pompa 2
 - **Automation Settings** — Threshold sliders (jarak_on/off, tds_on/off) synced to ESP32 via MQTT
-- **Energy Analytics** — Donut chart showing pompa1 vs pompa2 energy consumption (Wh)
 - **Water Level Widget** — Animated water wave visualization
 - **History Charts** — Time-series line charts for TDS, pH, and water level
 - **Night Mode** — Toggle to force all pumps OFF
@@ -28,7 +27,7 @@
 | Auth | `Auth` | Login / Register |
 | Dashboard | `Dashboard` | Live sensor cards, pump toggles, water level |
 | P&ID | `PID` | Interactive piping diagram |
-| Analytics | `Analytics` | Energy charts, history graphs |
+| Analytics | `Analytics` | History graphs (pH, TDS, water level) |
 | Automation | `Automation` | Threshold sliders, auto-mode toggles |
 | Notifications | `Notifications` | Pump state change alerts |
 | Profile | `Profile` | User info, device list, logout |
@@ -73,7 +72,6 @@ helioponic-mobile/
 │   │   └── WebSocketContext.tsx      # WebSocket connection for live data
 │   ├── store/
 │   │   ├── sensorStore.ts            # Zustand — sensor readings
-│   │   ├── energyStore.ts            # Zustand — energy consumption
 │   │   ├── waterStore.ts             # Zustand — water level history
 │   │   ├── nightModeStore.ts         # Zustand — night mode state
 │   │   └── notificationStore.ts      # Zustand — notifications
@@ -91,7 +89,6 @@ helioponic-mobile/
 │   │   ├── PumpToggle.tsx            # Pump ON/OFF button
 │   │   ├── PumpStateCard.tsx         # Pump state display card
 │   │   ├── WaterWaveWidget.tsx       # Animated water level visualization
-│   │   ├── EnergyDonutChart.tsx      # Energy consumption donut chart
 │   │   ├── HistoryLineChart.tsx      # Time-series line chart
 │   │   ├── CustomDatePicker.tsx      # Date range picker
 │   │   └── SectionHeader.tsx         # Screen section header
@@ -153,7 +150,6 @@ The app uses **Zustand** for client-side state management:
 | Store | Data | Persisted? |
 |-------|------|:----------:|
 | `sensorStore` | Live sensor readings (jarak_cm, tds, ph, pompa states) | No |
-| `energyStore` | Energy consumption summary & history | No |
 | `waterStore` | Water level history & summary | No |
 | `nightModeStore` | Night mode toggle state | No |
 | `notificationStore` | Notifications list & unread count | No |

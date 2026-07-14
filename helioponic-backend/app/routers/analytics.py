@@ -1,5 +1,5 @@
 """
-Analytics & data router — sensor, energy, water, actuator endpoints.
+Analytics & data router — sensor, water, actuator endpoints.
 
 All endpoints use the raw firmware field names (jarak_cm, tds_value, current_ph, pompa1, pompa2).
 """
@@ -16,10 +16,8 @@ from app.core.auth import get_current_user_id, verify_device_access
 from pydantic import BaseModel, Field
 
 from app.models.sensor import SensorReading
-from app.models.energy import EnergyRecord
 from app.models.water import WaterRecord
 from app.services.automation import evaluate_thresholds
-from app.services.energy import EnergyCalculator
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["analytics"])
@@ -27,6 +25,7 @@ router = APIRouter(tags=["analytics"])
 # Global references (set by main.py)
 mqtt_actuator_publish = None
 websocket_broadcast = None  # async callable for WebSocket hub.broadcast()
+
 
 
 # ─── Health ─────────────────────────────────────────────────────────────
@@ -79,60 +78,6 @@ async def get_sensor_history(
     }).sort("recorded_at", -1).limit(limit)
 
     records = [_format_sensor_record(r) async for r in cursor]
-    return {"data": records, "count": len(records)}
-
-
-# ─── Energy ─────────────────────────────────────────────────────────────
-
-@router.get("/energy/summary")
-async def get_energy_summary(
-    device_id: str = Query("HELIO_001"),
-    user_id: str = Depends(get_current_user_id),
-    db: AsyncIOMotorDatabase = Depends(get_database),
-):
-    """Return aggregated energy totals for today."""
-    await verify_device_access(db, device_id, user_id)
-
-    start_of_day = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-    pipeline = [
-        {"$match": {"device_id": device_id, "recorded_at": {"$gte": start_of_day}}},
-        {"$group": {
-            "_id": None,
-            "pompa1_wh": {"$sum": "$pompa1_wh"},
-            "pompa2_wh": {"$sum": "$pompa2_wh"},
-            "total_wh": {"$sum": "$total_wh"},
-        }},
-    ]
-    result = await db.energy_records.aggregate(pipeline).to_list(1)
-    if not result:
-        return {"pompa1_wh": 0, "pompa2_wh": 0, "total_wh": 0}
-    summary = result[0]
-    del summary["_id"]
-    return summary
-
-
-@router.get("/energy/history")
-async def get_energy_history(
-    from_date: str = Query(default=None),
-    to_date: str = Query(default=None),
-    device_id: str = Query("HELIO_001"),
-    limit: int = Query(100, ge=1, le=1000),
-    user_id: str = Depends(get_current_user_id),
-    db: AsyncIOMotorDatabase = Depends(get_database),
-):
-    """Return historical energy data for charts."""
-    await verify_device_access(db, device_id, user_id)
-
-    now = datetime.now(UTC)
-    from_dt = datetime.fromisoformat(from_date) if from_date else now - timedelta(hours=24)
-    to_dt = datetime.fromisoformat(to_date) if to_date else now
-
-    cursor = db.energy_records.find({
-        "device_id": device_id,
-        "recorded_at": {"$gte": from_dt, "$lte": to_dt},
-    }).sort("recorded_at", -1).limit(limit)
-
-    records = [_format_energy_record(r) async for r in cursor]
     return {"data": records, "count": len(records)}
 
 
@@ -248,6 +193,21 @@ async def control_pump(
     if mqtt_actuator_publish:
         await mqtt_actuator_publish(pump, state)
 
+    # Fetch auto_enabled & night_mode for WebSocket broadcast
+    config = await db.device_configs.find_one(
+        {"device_id": device_id},
+        sort=[("updated_at", -1)],
+    )
+    from app.services.automation import get_automation_rules
+    auto_rules = get_automation_rules(config or {})
+    auto_enabled = auto_rules.get("auto_enabled", True)
+    is_night = False
+    try:
+        snap = await db.night_mode_snapshots.find_one({"device_id": device_id})
+        is_night = bool(snap and snap.get("active"))
+    except Exception:
+        pass
+
     # Broadcast updated pump state to WebSocket clients
     if websocket_broadcast:
         ws_data = {
@@ -259,6 +219,8 @@ async def control_pump(
             "current_ph": record.get("current_ph", 0),
             "pompa1": record.get("pompa1", 0),
             "pompa2": record.get("pompa2", 0),
+            "night_mode": is_night,
+            "auto_enabled": auto_enabled,
             "recorded_at": now.isoformat(),
         }
         await websocket_broadcast(ws_data)
@@ -289,25 +251,8 @@ async def post_sensor_reading(
     )
     config_dict = config or {}
 
-    # ⚠️  DESIGN RULE: ESP32 pump states are SOURCE OF TRUTH — persist AS-IS.
-    # evaluate_thresholds() is used READ-ONLY for notification detection.
-    actual_pompa1 = reading.pompa1
-    actual_pompa2 = reading.pompa2
-
-    # Persist the ESP32's ACTUAL pump states (NEVER override with backend computation)
-    record = {
-        "device_id": device_id,
-        "recorded_at": now,
-        "jarak_cm": reading.jarak_cm,
-        "tds_value": reading.tds_value,
-        "current_ph": reading.current_ph,
-        "pompa1": actual_pompa1,
-        "pompa2": actual_pompa2,
-    }
-    await db.sensor_logs.insert_one(record)
-
-    # Check night mode before creating notifications
-    from app.core.database import get_database
+    # UNIFIED INGESTION: ALL telemetry (ESP32 or simulator) is Source of Truth.
+    # Backend persists pump states EXACTLY as reported — NEVER computes/overrides.
     is_night = False
     try:
         snap = await db.night_mode_snapshots.find_one({"device_id": device_id})
@@ -315,57 +260,48 @@ async def post_sensor_reading(
     except Exception:
         pass
 
+    # Extract auto_enabled from config for WebSocket broadcast
+    from app.services.automation import get_automation_rules
+    auto_rules = get_automation_rules(config_dict)
+    auto_enabled = auto_rules.get("auto_enabled", True)
+
+    # Persist sensor record AS-IS (source of truth)
+    record = {
+        "device_id": device_id,
+        "recorded_at": now,
+        "jarak_cm": reading.jarak_cm,
+        "tds_value": reading.tds_value,
+        "current_ph": reading.current_ph,
+        "pompa1": reading.pompa1,
+        "pompa2": reading.pompa2,
+    }
+    await db.sensor_logs.insert_one(record)
+
+    logger.debug(
+        f"REST: device={device_id} jarak={reading.jarak_cm} tds={reading.tds_value} "
+        f"→ p1={reading.pompa1} p2={reading.pompa2} (persisted AS-IS)"
+    )
+
     # Threshold evaluation for NOTIFICATIONS ONLY (read-only, never mutates DB)
     if not is_night and config_dict:
-        desired_p1, desired_p2 = evaluate_thresholds(
-            reading.jarak_cm,
-            reading.tds_value,
-            config_dict,
-            actual_pompa1,
-            actual_pompa2,
-        )
-        # Detect pump state transitions from ESP32's reported actual values
-        await _create_rest_notification(
-            db, device_id, actual_pompa1, actual_pompa2,
-            desired_p1, desired_p2, now
-        )
-        # Detect threshold violations (jarak/tds approaching limits)
-        await _create_rest_threshold_warnings(
-            db, device_id, reading.jarak_cm, reading.tds_value, config_dict, now
-        )
+            desired_p1, desired_p2 = evaluate_thresholds(
+                reading.jarak_cm,
+                reading.tds_value,
+                config_dict,
+                reading.pompa1,
+                reading.pompa2,
+                current_ph=reading.current_ph,
+            )
+            await _create_rest_notification(
+                db, device_id, reading.pompa1, reading.pompa2,
+                desired_p1, desired_p2, now
+            )
+            await _create_rest_threshold_warnings(
+                db, device_id, reading.jarak_cm, reading.tds_value, config_dict, now,
+                current_ph=reading.current_ph,
+            )
 
-    # Compute energy deltas (using actual pump states)
-    prev_record = await db.sensor_logs.find_one(
-        {"device_id": device_id},
-        sort=[("recorded_at", -1)],
-        skip=1,
-    )
-    if prev_record and prev_record.get("recorded_at"):
-        prev_ts = prev_record["recorded_at"]
-        if isinstance(prev_ts, str):
-            prev_ts = prev_ts.replace("Z", "+00:00")
-            prev_ts = datetime.fromisoformat(prev_ts)
-        # Make sure both datetimes are offset-aware (UTC) for subtraction
-        if prev_ts.tzinfo is None:
-            prev_ts = prev_ts.replace(tzinfo=UTC)
-        elapsed = (now - prev_ts).total_seconds()
-        if elapsed > 60.0:
-            elapsed = 1.0
-        elif elapsed < 0.5:
-            elapsed = 1.0
-
-        energy_calc = EnergyCalculator()
-        wh = energy_calc.calculate_total_pump_wh(actual_pompa1, actual_pompa2, elapsed)
-        energy_record = EnergyRecord(
-            device_id=device_id,
-            recorded_at=now,
-            pompa1_wh=wh["pompa1_wh"],
-            pompa2_wh=wh["pompa2_wh"],
-            total_wh=wh["total_wh"],
-        )
-        await db.energy_records.insert_one(energy_record.model_dump())
-
-    # Broadcast to WebSocket clients (REST fallback path, actual pump states)
+    # Broadcast to WebSocket clients
     if websocket_broadcast:
         from app.services.water import WaterCalculator
         water_calc = WaterCalculator()
@@ -376,10 +312,11 @@ async def post_sensor_reading(
             "jarak_cm": reading.jarak_cm,
             "tds_value": reading.tds_value,
             "current_ph": reading.current_ph,
-            "pompa1": actual_pompa1,
-            "pompa2": actual_pompa2,
+            "pompa1": reading.pompa1,
+            "pompa2": reading.pompa2,
             "water_level_pct": water_calc.jarak_to_water_level_pct(reading.jarak_cm),
             "night_mode": is_night,
+            "auto_enabled": auto_enabled,
             "recorded_at": now.isoformat(),
         }
         await websocket_broadcast(broadcast_data)
@@ -388,7 +325,7 @@ async def post_sensor_reading(
     return {
         "status": "ok",
         "message": "sensor reading saved",
-        "pumps_reported": {"pompa1": actual_pompa1, "pompa2": actual_pompa2},
+        "pumps_reported": {"pompa1": reading.pompa1, "pompa2": reading.pompa2},
     }
 
 
@@ -413,6 +350,24 @@ async def get_notifications(
     cursor = db.notifications.find(query).sort("created_at", -1).limit(limit)
     notifications = [_format_notification(n) async for n in cursor]
     return {"data": notifications, "count": len(notifications)}
+
+
+@router.get("/notifications/unread-count")
+async def get_unread_notification_count(
+    device_id: str = Query("HELIO_001"),
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+):
+    """Return the total count of unread notifications.
+
+    Uses MongoDB count_documents for accurate counting (not limited by fetch limit).
+    """
+    await verify_device_access(db, device_id, user_id)
+    count = await db.notifications.count_documents({
+        "device_id": device_id,
+        "read": False,
+    })
+    return {"unread_count": count}
 
 
 @router.patch("/notifications/{notification_id}/read")
@@ -476,6 +431,17 @@ def _format_notification(n: dict) -> dict:
 
 # Track previous pump states for REST path notification (per device)
 _rest_notif_state: dict[str, dict] = {}  # device_id -> {p1, p2, last_notif}
+
+
+def reset_notif_state(device_id: str):
+    """Reset the REST notification state for a device.
+
+    Called when device thresholds are updated so the notification engine
+    starts fresh without stale pump state tracking.
+    """
+    if device_id in _rest_notif_state:
+        del _rest_notif_state[device_id]
+        logger.info(f"Reset REST notification state for device {device_id}")
 
 
 async def _create_rest_notification(
@@ -555,10 +521,11 @@ _rest_warning_state: dict[str, dict] = {}
 async def _create_rest_threshold_warnings(
     db: AsyncIOMotorDatabase,
     device_id: str,
-    jarak_cm: int,
+    jarak_cm: float,
     tds_value: float,
     config: dict,
     now: datetime,
+    current_ph: float | None = None,
 ):
     """Create warning notifications when sensor values approach critical levels (REST path)."""
     if device_id not in _rest_warning_state:
@@ -600,6 +567,22 @@ async def _create_rest_threshold_warnings(
             })
             last_warn["water_alarm"] = now
 
+    # ── pH warning (pH > ph_max — pH DOWN needed) ──
+    ph_max = config.get("ph_max", 6.5)
+    if current_ph is not None and current_ph > 0 and current_ph > ph_max:
+        last = last_warn.get("ph_high", datetime.min.replace(tzinfo=UTC))
+        if (now - last).total_seconds() > cooldown:
+            await db.notifications.insert_one({
+                "device_id": device_id,
+                "type": "ph_warning",
+                "title": "pH Too High — Dosing Needed",
+                "message": f"pH {current_ph:.1f} exceeds threshold {ph_max:.1f} — Pompa 2 (pH DOWN) activated",
+                "priority": "medium",
+                "read": False,
+                "created_at": now,
+            })
+            last_warn["ph_high"] = now
+
 
 # ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -614,17 +597,6 @@ def _format_sensor_record(record: dict) -> dict:
         "current_ph": record.get("current_ph", 0),
         "pompa1": record.get("pompa1", 0),
         "pompa2": record.get("pompa2", 0),
-    }
-
-
-def _format_energy_record(record: dict) -> dict:
-    """Format a MongoDB energy_records document for API response."""
-    return {
-        "id": str(record["_id"]),
-        "recorded_at": record.get("recorded_at").isoformat() if record.get("recorded_at") else None,
-        "pompa1_wh": record.get("pompa1_wh", 0),
-        "pompa2_wh": record.get("pompa2_wh", 0),
-        "total_wh": record.get("total_wh", 0),
     }
 
 

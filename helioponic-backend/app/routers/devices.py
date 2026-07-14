@@ -22,8 +22,10 @@ from bson.objectid import ObjectId
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/devices", tags=["devices"])
 
-# Global reference to MQTT subscriber (set by main.py)
+# Global references (set by main.py)
 mqtt_publish_downlink = None
+reset_subscriber_state = None  # async callable to reset subscriber hysteresis state
+reset_notif_state = None  # async callable to reset REST notification state
 
 
 @router.get("")
@@ -127,19 +129,23 @@ async def get_device_config(
     if not config:
         return {
             "device_id": device_id,
-            "jarak_on": 5,
-            "jarak_off": 2,
+            "jarak_on": 5.0,
+            "jarak_off": 2.0,
             "tds_on": 105.0,
             "tds_off": 95.0,
+            "ph_min": 5.5,
+            "ph_max": 6.5,
             "updated_at": None,
         }
 
     return {
         "device_id": config.get("device_id", device_id),
-        "jarak_on": config.get("jarak_on", 5),
-        "jarak_off": config.get("jarak_off", 2),
+        "jarak_on": config.get("jarak_on", 5.0),
+        "jarak_off": config.get("jarak_off", 2.0),
         "tds_on": config.get("tds_on", 105.0),
         "tds_off": config.get("tds_off", 95.0),
+        "ph_min": config.get("ph_min", 5.5),
+        "ph_max": config.get("ph_max", 6.5),
         "updated_at": config.get("updated_at").isoformat() if config.get("updated_at") else None,
     }
 
@@ -225,10 +231,12 @@ async def update_automation_rules(
         )
     else:
         update_data["device_id"] = device_id
-        update_data["jarak_on"] = 5
-        update_data["jarak_off"] = 2
+        update_data["jarak_on"] = 5.0
+        update_data["jarak_off"] = 2.0
         update_data["tds_on"] = 105.0
         update_data["tds_off"] = 95.0
+        update_data["ph_min"] = 5.5
+        update_data["ph_max"] = 6.5
         await db.device_configs.insert_one(update_data)
 
     logger.info(
@@ -269,6 +277,8 @@ async def update_device_config(
         "jarak_off": payload.jarak_off,
         "tds_on": payload.tds_on,
         "tds_off": payload.tds_off,
+        "ph_min": payload.ph_min,
+        "ph_max": payload.ph_max,
         "updated_at": datetime.now(UTC),
     }
     result = await db.device_configs.insert_one(config_doc)
@@ -281,12 +291,22 @@ async def update_device_config(
             "jarak_off": payload.jarak_off,
             "tds_on": payload.tds_on,
             "tds_off": payload.tds_off,
+            "ph_min": payload.ph_min,
+            "ph_max": payload.ph_max,
         })
+
+    # Reset automation hysteresis state so threshold changes take effect immediately
+    if reset_subscriber_state:
+        await reset_subscriber_state(device_id)
+    # Also reset REST path notification state
+    if reset_notif_state:
+        await reset_notif_state(device_id)
 
     logger.info(
         f"Device config updated: device_id={device_id}, "
         f"jarak_on={payload.jarak_on}, jarak_off={payload.jarak_off}, "
-        f"tds_on={payload.tds_on}, tds_off={payload.tds_off}"
+        f"tds_on={payload.tds_on}, tds_off={payload.tds_off}, "
+        f"ph_min={payload.ph_min}, ph_max={payload.ph_max}"
     )
     return {
         "status": "ok",
@@ -295,5 +315,7 @@ async def update_device_config(
         "jarak_off": payload.jarak_off,
         "tds_on": payload.tds_on,
         "tds_off": payload.tds_off,
+        "ph_min": payload.ph_min,
+        "ph_max": payload.ph_max,
         "updated_at": config_doc["updated_at"].isoformat(),
     }

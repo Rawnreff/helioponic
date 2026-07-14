@@ -23,10 +23,6 @@ res = api("GET", "/water/summary?device_id=HELIO_001", headers=headers)
 print(f"  water_level_pct: {res.get('water_level_pct', 0):.1f}%")
 print(f"  jarak_cm: {res.get('jarak_cm')}")
 
-print("\n=== Energy summary ===")
-res = api("GET", "/energy/summary?device_id=HELIO_001", headers=headers)
-print(f"  total_wh: {res.get('total_wh', 0):.3f}")
-
 print("\n=== Latest 3 history records ===")
 res = api("GET", "/sensors/history?device_id=HELIO_001&limit=3", headers=headers)
 print(f"  Total records: {res.get('count', 0)}")

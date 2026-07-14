@@ -1,6 +1,7 @@
 import React, {useState, useCallback} from 'react';
 import {View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator, Alert} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
+import {Ionicons} from '@expo/vector-icons';
 import {useAuth} from '../context/AuthContext';
 import {Colors, Shadows, BorderRadius} from '../context/ThemeContext';
 
@@ -10,9 +11,11 @@ export default function AuthScreen() {
   const [loading, setLoading] = useState(false);
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  const [showLoginPw, setShowLoginPw] = useState(false);
   const [regName, setRegName] = useState('');
   const [regEmail, setRegEmail] = useState('');
   const [regPassword, setRegPassword] = useState('');
+  const [showRegPw, setShowRegPw] = useState(false);
   const [regDeviceId, setRegDeviceId] = useState('');
 
   const handleLogin = useCallback(async () => {
@@ -56,7 +59,12 @@ export default function AuthScreen() {
               <Text style={styles.formTitle}>Welcome back</Text>
               <Text style={styles.formSubtitle}>Sign in to monitor your crops</Text>
               <TextInput style={styles.input} placeholder="Email" placeholderTextColor={Colors.textHint} keyboardType="email-address" autoCapitalize="none" value={loginEmail} onChangeText={setLoginEmail} />
-              <TextInput style={styles.input} placeholder="Password" placeholderTextColor={Colors.textHint} secureTextEntry value={loginPassword} onChangeText={setLoginPassword} />
+              <View style={styles.pwContainer}>
+                <TextInput style={styles.pwInput} placeholder="Password" placeholderTextColor={Colors.textHint} secureTextEntry={!showLoginPw} value={loginPassword} onChangeText={setLoginPassword} />
+                <TouchableOpacity style={styles.pwToggle} onPress={() => setShowLoginPw(!showLoginPw)}>
+                  <Ionicons name={showLoginPw ? 'eye-off' : 'eye'} size={20} color={Colors.textHint} />
+                </TouchableOpacity>
+              </View>
               <TouchableOpacity style={[styles.button, loading && styles.buttonDisabled]} onPress={handleLogin} disabled={loading}>
                 {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Sign In</Text>}
               </TouchableOpacity>
@@ -67,7 +75,12 @@ export default function AuthScreen() {
               <Text style={styles.formSubtitle}>Set up your hydroponic system</Text>
               <TextInput style={styles.input} placeholder="Name" placeholderTextColor={Colors.textHint} value={regName} onChangeText={setRegName} />
               <TextInput style={styles.input} placeholder="Email" placeholderTextColor={Colors.textHint} keyboardType="email-address" autoCapitalize="none" value={regEmail} onChangeText={setRegEmail} />
-              <TextInput style={styles.input} placeholder="Password (min 6 chars)" placeholderTextColor={Colors.textHint} secureTextEntry value={regPassword} onChangeText={setRegPassword} />
+              <View style={styles.pwContainer}>
+                <TextInput style={styles.pwInput} placeholder="Password (min 6 chars)" placeholderTextColor={Colors.textHint} secureTextEntry={!showRegPw} value={regPassword} onChangeText={setRegPassword} />
+                <TouchableOpacity style={styles.pwToggle} onPress={() => setShowRegPw(!showRegPw)}>
+                  <Ionicons name={showRegPw ? 'eye-off' : 'eye'} size={20} color={Colors.textHint} />
+                </TouchableOpacity>
+              </View>
               <TextInput style={styles.input} placeholder="Device ID (e.g. HELIO_001)" placeholderTextColor={Colors.textHint} autoCapitalize="characters" value={regDeviceId} onChangeText={setRegDeviceId} />
               <TouchableOpacity style={[styles.button, loading && styles.buttonDisabled]} onPress={handleRegister} disabled={loading}>
                 {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Create Account</Text>}
@@ -98,6 +111,9 @@ const styles = StyleSheet.create({
   formTitle: {fontSize: 18, fontWeight: '700', color: Colors.textPrimary},
   formSubtitle: {fontSize: 12, color: Colors.textSecondary, marginBottom: 20, marginTop: 4},
   input: {backgroundColor: Colors.background, borderRadius: BorderRadius.button, paddingHorizontal: 16, paddingVertical: 14, fontSize: 14, color: Colors.textPrimary, marginBottom: 12, borderWidth: 1, borderColor: Colors.cardBorder},
+  pwContainer: {flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.background, borderRadius: BorderRadius.button, marginBottom: 12, borderWidth: 1, borderColor: Colors.cardBorder},
+  pwInput: {flex: 1, paddingHorizontal: 16, paddingVertical: 14, fontSize: 14, color: Colors.textPrimary},
+  pwToggle: {paddingHorizontal: 14, paddingVertical: 10},
   button: {backgroundColor: Colors.primaryGreen, borderRadius: BorderRadius.button, paddingVertical: 14, alignItems: 'center', marginTop: 8},
   buttonDisabled: {opacity: 0.6},
   buttonText: {color: '#fff', fontWeight: '700', fontSize: 15, letterSpacing: 0.3},

@@ -134,23 +134,14 @@ for did in account_device_ids:
     except Exception as e:
         info(f"{did}: error - {e}")
 
-# Step 7: Check MQTT data flow via water/energy summaries
-print("\n[7] Water & Energy summary check for HELIO_001...")
+# Step 7: Check MQTT data flow via water summary
+print("\n[7] Water summary check for HELIO_001...")
 try:
     res, code = api("GET", f"/water/summary?device_id=HELIO_001", headers=headers)
     if code == 200:
         ok(f"Water summary: {res.get('water_level_pct', 0):.1f}% (jarak_cm={res.get('jarak_cm')})")
     else:
         info(f"Water summary unavailable: {res}")
-except Exception as e:
-    info(f"Error: {e}")
-
-try:
-    res, code = api("GET", f"/energy/summary?device_id=HELIO_001", headers=headers)
-    if code == 200:
-        ok(f"Energy summary: total={res.get('total_wh', 0):.3f} Wh")
-    else:
-        info(f"Energy summary unavailable: {res}")
 except Exception as e:
     info(f"Error: {e}")
 

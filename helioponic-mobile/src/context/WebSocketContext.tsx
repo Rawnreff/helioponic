@@ -17,6 +17,7 @@ export function WebSocketProvider({children}: {children: React.ReactNode}) {
   const setConnected = useSensorStore((s) => s.setConnected);
   const setDeviceStatus = useSensorStore((s) => s.setDeviceStatus);
   const setAlarm = useSensorStore((s) => s.setAlarm);
+  const clearOverridePump = useSensorStore((s) => s.clearOverridePump);
   const resetSensor = useSensorStore((s) => s.reset);
   deviceIdRef.current = activeDeviceId;
 
@@ -41,7 +42,17 @@ export function WebSocketProvider({children}: {children: React.ReactNode}) {
             current_ph: sensorMsg.current_ph,
             pompa1: sensorMsg.pompa1,
             pompa2: sensorMsg.pompa2,
+            auto_enabled: sensorMsg.auto_enabled ?? true,
+            night_mode: sensorMsg.night_mode,
           });
+          // Auto-clear shared overridePumps ketika WS confirm state
+          const state = useSensorStore.getState();
+          if (state.overridePumps.pompa1 !== undefined && state.overridePumps.pompa1 === sensorMsg.pompa1) {
+            clearOverridePump('pompa1');
+          }
+          if (state.overridePumps.pompa2 !== undefined && state.overridePumps.pompa2 === sensorMsg.pompa2) {
+            clearOverridePump('pompa2');
+          }
           break;
         }
         case 'status_update':

@@ -53,10 +53,6 @@ async def ensure_indexes():
         name="sensor_logs_ttl_7d",
     )
 
-    # energy_records indexes
-    await db.energy_records.create_index("device_id")
-    await db.energy_records.create_index([("device_id", 1), ("recorded_at", -1)])
-
     # water_records indexes
     await db.water_records.create_index("device_id")
     await db.water_records.create_index([("device_id", 1), ("recorded_at", -1)])

@@ -29,18 +29,13 @@ export interface Device {
 export interface SensorReading {
   device_id: string; ts: number; jarak_cm: number; tds_value: number;
   current_ph: number; pompa1: 0 | 1; pompa2: 0 | 1;
+  auto_enabled?: boolean;
+  night_mode?: boolean;
 }
 
 export interface SensorRecord {
   id: string; device_id: string; recorded_at: string; jarak_cm: number;
   tds_value: number; current_ph: number; pompa1: 0 | 1; pompa2: 0 | 1;
-}
-
-// ─── Energy Types ──────────────────────────────────────
-export interface EnergySummary {pompa1_wh: number; pompa2_wh: number; total_wh: number}
-export interface EnergyRecord {
-  id: string; device_id: string; recorded_at: string;
-  pompa1_wh: number; pompa2_wh: number; total_wh: number;
 }
 
 // ─── Water Types ───────────────────────────────────────
@@ -50,10 +45,12 @@ export interface WaterRecord {id: string; device_id: string; recorded_at: string
 // ─── Device Config Types ───────────────────────────────
 export interface DeviceConfig {
   device_id: string; jarak_on: number; jarak_off: number;
-  tds_on: number; tds_off: number; updated_at: string | null;
+  tds_on: number; tds_off: number; ph_min: number; ph_max: number;
+  updated_at: string | null;
 }
 export interface DeviceConfigPayload {
-  device_id: string; jarak_on: number; jarak_off: number; tds_on: number; tds_off: number;
+  device_id: string; jarak_on: number; jarak_off: number;
+  tds_on: number; tds_off: number; ph_min: number; ph_max: number;
 }
 
 // ─── Actuator Types ────────────────────────────────────
@@ -151,6 +148,8 @@ export interface WebSocketSensorMessage {
   pompa1: 0 | 1;
   pompa2: 0 | 1;
   water_level_pct?: number;
+  auto_enabled?: boolean;
+  night_mode?: boolean;
   recorded_at: string;
 }
 
@@ -173,5 +172,4 @@ export type WebSocketMessage = WebSocketSensorMessage | WebSocketStatusMessage |
 
 // ─── History Types ────────────────────────────────────
 export interface SensorHistoryRecord extends SensorRecord {}
-export interface EnergyHistoryRecord extends EnergyRecord {}
 export interface WaterHistoryRecord extends WaterRecord {}

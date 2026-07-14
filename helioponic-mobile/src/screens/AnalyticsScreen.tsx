@@ -6,7 +6,7 @@ import {Ionicons} from '@expo/vector-icons';
 import CustomDatePicker from '../components/CustomDatePicker';
 import {useAuth} from '../context/AuthContext';
 import {HistoryLineChart} from '../components/HistoryLineChart';
-import {sensorsApi, waterApi, energyApi} from '../lib/apiClient';
+import {sensorsApi, waterApi} from '../lib/apiClient';
 import {SectionHeader} from '../components/SectionHeader';
 import {Colors, Shadows} from '../context/ThemeContext';
 
@@ -79,7 +79,7 @@ export default function AnalyticsScreen() {
   const [period, setPeriod] = useState<Period>('day');
   const [sensorHistory, setSensorHistory] = useState<any[]>([]);
   const [waterHistory, setWaterHistory] = useState<any[]>([]);
-  const [energyHistory, setEnergyHistory] = useState<any[]>([]);
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -97,18 +97,16 @@ export default function AnalyticsScreen() {
     setError(null);
     try {
       const {from, to} = getTimeRange(p);
-      const [sensorRes, waterRes, energyRes] = await Promise.all([
+      const [sensorRes, waterRes] = await Promise.all([
         sensorsApi.history(from.toISOString(), to.toISOString(), activeDeviceId, 200),
         waterApi.history(from.toISOString(), to.toISOString(), activeDeviceId, 200),
-        energyApi.history(from.toISOString(), to.toISOString(), activeDeviceId, 200),
       ]);
       setSensorHistory(sensorRes.data || []);
       setWaterHistory(waterRes.data || []);
-      setEnergyHistory(energyRes.data || []);
     } catch (err: any) {
       console.warn('[Analytics] fetchHistory failed:', err?.message || err);
       setError(err?.message || 'Failed to load analytics data');
-      setSensorHistory([]); setWaterHistory([]); setEnergyHistory([]);
+      setSensorHistory([]); setWaterHistory([]);
     }
     finally {setLoading(false);}
   }, [activeDeviceId]);
@@ -129,14 +127,12 @@ export default function AnalyticsScreen() {
     if (!customFrom || !customTo) return;
     setLoading(true);
     try {
-      const [sensorRes, waterRes, energyRes] = await Promise.all([
+      const [sensorRes, waterRes] = await Promise.all([
         sensorsApi.history(customFrom.toISOString(), customTo.toISOString(), activeDeviceId, 500),
         waterApi.history(customFrom.toISOString(), customTo.toISOString(), activeDeviceId, 500),
-        energyApi.history(customFrom.toISOString(), customTo.toISOString(), activeDeviceId, 500),
       ]);
       setSensorHistory(sensorRes.data || []);
       setWaterHistory(waterRes.data || []);
-      setEnergyHistory(energyRes.data || []);
     } finally {setLoading(false);}
   }, [customFrom, customTo, activeDeviceId]);
 
@@ -213,9 +209,7 @@ export default function AnalyticsScreen() {
             <MiniStat label="pH" value={latest(sensorHistory, 'current_ph')?.toFixed(1) ?? '--'} avg={avg(sensorHistory.map(s => s.current_ph)).toFixed(1)} color={Colors.tempBlue} icon="flask" />
             <MiniStat label="TDS" value={latest(sensorHistory, 'tds_value')?.toFixed(0) ?? '--'} avg={avg(sensorHistory.map(s => s.tds_value)).toFixed(0)} color={Colors.energyOrange} icon="water" />
             <MiniStat label="Water" value={`${Math.round(computeWaterPct(latest(sensorHistory, 'jarak_cm') ?? 999))}%`} avg={`${Math.round(avg(sensorHistory.map(s => computeWaterPct(s.jarak_cm || 999))))}%`} color={Colors.waterTeal} icon="water" />
-            {energyHistory.length > 0 && (
-              <MiniStat label="Energy" value={`${latest(energyHistory, 'total_wh')?.toFixed(2) ?? '0.00'}`} avg={`${avg(energyHistory.map(s => s.total_wh)).toFixed(2)} Wh`} color={Colors.solarAmber} icon="sunny" />
-            )}
+
           </View>
         )}
 
@@ -226,7 +220,7 @@ export default function AnalyticsScreen() {
             </View>
             <ChartCard title="TDS (ppm)" icon="water" color={Colors.energyOrange} colors={['#EF6C00', '#FFA726'] as const} data={buildChartData(sensorHistory, 'tds_value')} latestValue={latest(sensorHistory, 'tds_value')?.toFixed(0)} chartWidth={chartWidth} />
             <ChartCard title="Water Level (%)" icon="water" color={Colors.waterTeal} colors={['#00897B', '#4DB6AC'] as const} data={sensorHistory.slice().reverse().map((r, i) => ({value: computeWaterPct(r.jarak_cm || 999), label: i % Math.max(1, Math.floor(sensorHistory.length / 5)) === 0 ? new Date(r.recorded_at).getHours() + 'h' : ''}))} latestValue={`${Math.round(computeWaterPct(latest(sensorHistory, 'jarak_cm') ?? 999))}%`} chartWidth={chartWidth} />
-            <ChartCard title="Energy (Wh)" icon="sunny" color={Colors.solarAmber} colors={['#FFB300', '#FFD54F'] as const} data={buildChartData(energyHistory, 'total_wh')} latestValue={energyHistory.length > 0 ? latest(energyHistory, 'total_wh')?.toFixed(2) + ' Wh' : null} chartWidth={chartWidth} />
+
           </>
         )}
       </ScrollView>

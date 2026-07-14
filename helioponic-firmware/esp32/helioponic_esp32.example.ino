@@ -115,6 +115,7 @@
 #define JARAK_OFF         2       // cm — water recovered, turn pump OFF (e.g. 2cm → ~71% water)
 #define TDS_ON            95      // ppm — nutrients too low (LOW threshold), turn dosing ON
 #define TDS_OFF           105     // ppm — nutrients sufficient (HIGH threshold), turn dosing OFF
+#define PH_MAX            6.5     // pH — pH DOWN threshold: Pompa 2 ON when pH exceeds this
 
 // ---- Sampling ----
 #define ADC_OVERSAMPLE_N  16      // Number of ADC samples for averaging
@@ -189,6 +190,7 @@ int   runtime_jarak_on  = JARAK_ON;
 int   runtime_jarak_off = JARAK_OFF;
 float runtime_tds_on    = TDS_ON;
 float runtime_tds_off   = TDS_OFF;
+float runtime_ph_max    = PH_MAX; // pH DOWN threshold: Pompa 2 ON when pH > this
 
 // ---- Night Mode state — G-02 ----
 bool nightModeActive = false;
@@ -333,12 +335,14 @@ void fetchConfigViaHTTP() {
       if (doc.containsKey("jarak_off")) runtime_jarak_off = doc["jarak_off"] | JARAK_OFF;
       if (doc.containsKey("tds_on"))    runtime_tds_on    = doc["tds_on"]    | TDS_ON;
       if (doc.containsKey("tds_off"))   runtime_tds_off   = doc["tds_off"]   | TDS_OFF;
+      if (doc.containsKey("ph_max"))    runtime_ph_max    = doc["ph_max"]    | PH_MAX;
 
       Serial.println("Thresholds synced via HTTP:");
       Serial.print("  jarak_on = ");  Serial.println(runtime_jarak_on);
       Serial.print("  jarak_off = "); Serial.println(runtime_jarak_off);
       Serial.print("  tds_on = ");    Serial.println(runtime_tds_on);
       Serial.print("  tds_off = ");   Serial.println(runtime_tds_off);
+      Serial.print("  ph_max = ");    Serial.println(runtime_ph_max);
     } else {
       Serial.print("HTTP config parse error: ");
       Serial.println(error.c_str());
@@ -410,12 +414,14 @@ void handleConfigDownlink(const char* message) {
   if (doc.containsKey("jarak_off")) runtime_jarak_off = doc["jarak_off"] | JARAK_OFF;
   if (doc.containsKey("tds_on"))    runtime_tds_on    = doc["tds_on"]    | TDS_ON;
   if (doc.containsKey("tds_off"))   runtime_tds_off   = doc["tds_off"]   | TDS_OFF;
+  if (doc.containsKey("ph_max"))    runtime_ph_max    = doc["ph_max"]    | PH_MAX;
 
   Serial.println("Runtime thresholds updated:");
   Serial.print("  jarak_on = ");  Serial.println(runtime_jarak_on);
   Serial.print("  jarak_off = "); Serial.println(runtime_jarak_off);
   Serial.print("  tds_on = ");    Serial.println(runtime_tds_on);
   Serial.print("  tds_off = ");   Serial.println(runtime_tds_off);
+  Serial.print("  ph_max = ");    Serial.println(runtime_ph_max);
 }
 
 // =============================================================================
@@ -483,6 +489,7 @@ void handleNightModeDownlink(const char* message) {
     if (doc.containsKey("jarak_off")) runtime_jarak_off = doc["jarak_off"] | JARAK_OFF;
     if (doc.containsKey("tds_on"))    runtime_tds_on    = doc["tds_on"]    | TDS_ON;
     if (doc.containsKey("tds_off"))   runtime_tds_off   = doc["tds_off"]   | TDS_OFF;
+    if (doc.containsKey("ph_max"))    runtime_ph_max    = doc["ph_max"]    | PH_MAX;
   }
 }
 
@@ -607,37 +614,58 @@ void runBangBangAutomation() {
   }
 
   // =====================================================================
-  // PRIORITY 2: Pompa 2 — TDS/Nutrient Dosing (tds_value only)
+  // PRIORITY 2: Pompa 2 — pH DOWN OR TDS/Nutrient Dosing
   // =====================================================================
+  // 💡 Sistem hanya punya pompa pH DOWN (satu arah).
+  //   pH DOWN: Pompa 2 ON ketika pH > ph_max (pH terlalu tinggi)
+  //   TDS:     Pompa 2 ON ketika TDS < tds_on (nutrisi habis)
+  //   Priority: pH DOWN > TDS (pH lebih kritis)
+  //
+  // tds_on  = LOW  threshold — ON  when TDS drops below this
+  // tds_off = HIGH threshold — OFF when TDS rises above this
+  // Hysteresis: tds_off > tds_on (deadband between them)
+  //
   // CORRECTED LOGIC (PRD v3.2):
   //   - When TDS is LOW → nutrients depleted → dosing pump ON
   //   - When TDS is HIGH → nutrients sufficient → dosing pump OFF
-  //   tds_on  = LOW  threshold — ON  when TDS drops below this
-  //   tds_off = HIGH threshold — OFF when TDS rises above this
-  //   Hysteresis: tds_off > tds_on (deadband between them)
   if (!manualOverridePompa2) {
-    if (current_tds < runtime_tds_on) {
-      // Nutrients too low → turn dosing pump ON
+    bool phDownNeeded = (current_ph > runtime_ph_max);
+
+    if (phDownNeeded) {
+      // ═══ pH DOWN: pH too HIGH → Pompa 2 ON (higher priority than TDS) ═══
       if (!perintahPompa2) {
         perintahPompa2 = true;
-        Serial.print("AUTO-TDS: tds=");
-        Serial.print(current_tds, 0);
-        Serial.print("<");
-        Serial.print(runtime_tds_on, 0);
-        Serial.println(" → pompa2=ON");
-      }
-    } else if (current_tds > runtime_tds_off) {
-      // Nutrients sufficient → turn dosing pump OFF
-      if (perintahPompa2) {
-        perintahPompa2 = false;
-        Serial.print("AUTO-TDS: tds=");
-        Serial.print(current_tds, 0);
+        Serial.print("AUTO-PH: ph=");
+        Serial.print(current_ph, 1);
         Serial.print(">");
-        Serial.print(runtime_tds_off, 0);
-        Serial.println(" → pompa2=OFF");
+        Serial.print(runtime_ph_max, 1);
+        Serial.println(" → pompa2=ON (pH DOWN)");
       }
+    } else {
+      // ═══ pH OK (≤ ph_max) — fall back to TDS control ═══
+      if (current_tds < runtime_tds_on) {
+        // Nutrients too low → turn dosing pump ON
+        if (!perintahPompa2) {
+          perintahPompa2 = true;
+          Serial.print("AUTO-TDS: tds=");
+          Serial.print(current_tds, 0);
+          Serial.print("<");
+          Serial.print(runtime_tds_on, 0);
+          Serial.println(" → pompa2=ON");
+        }
+      } else if (current_tds > runtime_tds_off) {
+        // Nutrients sufficient → turn dosing pump OFF
+        if (perintahPompa2) {
+          perintahPompa2 = false;
+          Serial.print("AUTO-TDS: tds=");
+          Serial.print(current_tds, 0);
+          Serial.print(">");
+          Serial.print(runtime_tds_off, 0);
+          Serial.println(" → pompa2=OFF");
+        }
+      }
+      // else: within deadband (tds_on <= current_tds <= tds_off) → no change
     }
-    // else: within deadband (tds_on <= current_tds <= tds_off) → no change
   }
 }
 

@@ -4,18 +4,21 @@ import {SafeAreaView} from 'react-native-safe-area-context';
 import {LinearGradient} from 'expo-linear-gradient';
 import Slider from '@react-native-community/slider';
 import {Ionicons} from '@expo/vector-icons';
+import {useFocusEffect} from '@react-navigation/native';
 import {useAuth} from '../context/AuthContext';
 import {configApi, automationApi, nightModeApi} from '../lib/apiClient';
 import {useNightModeStore} from '../store/nightModeStore';
+import {useSensorStore} from '../store/sensorStore';
 import {SectionHeader} from '../components/SectionHeader';
 import {Colors, Shadows} from '../context/ThemeContext';
 
-interface ThresholdDraft {jarak_on: number; jarak_off: number; tds_on: number; tds_off: number}
+interface ThresholdDraft {jarak_on: number; jarak_off: number; tds_on: number; tds_off: number; ph_min: number; ph_max: number}
 
 // ── Reusable compact threshold slider (internal) ──────────────────────
-function ParamSlider({icon, title, subtitle, color, bg, value, min, max, step, displayValue, onChange, disabled}: {
+function ParamSlider({icon, title, subtitle, color, bg, value, min, max, step, displayValue, extraDisplay, onChange, disabled}: {
   icon: string; title: string; subtitle: string; color: string; bg: string;
   value: number; min: number; max: number; step: number; displayValue: string;
+  extraDisplay?: string;
   onChange: (v: number) => void; disabled?: boolean;
 }) {
   const borderColors = disabled ? (['#E8ECF1', '#E8ECF1'] as const) : ([color + '80', color + '40'] as const);
@@ -25,7 +28,10 @@ function ParamSlider({icon, title, subtitle, color, bg, value, min, max, step, d
         <View style={{flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12}}>
           <View style={{padding: 8, borderRadius: 12, backgroundColor: bg}}><Ionicons name={icon as any} size={16} color={color} /></View>
           <View style={{flex: 1}}><Text style={{fontSize: 14, fontWeight: '700', color: Colors.textPrimary}}>{title}</Text><Text style={{fontSize: 10, color: Colors.textSecondary, marginTop: 1}}>{subtitle}</Text></View>
-          <View style={{paddingHorizontal: 12, paddingVertical: 5, borderRadius: 8, backgroundColor: color + '18'}}><Text style={{fontSize: 13, fontWeight: '800', color}}>{displayValue}</Text></View>
+          <View style={{paddingHorizontal: 12, paddingVertical: 5, borderRadius: 8, backgroundColor: color + '18', alignItems: 'center'}}>
+            <Text style={{fontSize: 13, fontWeight: '800', color}}>{displayValue}</Text>
+            {extraDisplay && <Text style={{fontSize: 9, fontWeight: '600', color, marginTop: 1, opacity: 0.8}}>{extraDisplay}</Text>}
+          </View>
         </View>
         <Slider style={{width: '100%', height: 40}} minimumValue={min} maximumValue={max} step={step} value={value} onValueChange={onChange} disabled={disabled} minimumTrackTintColor={color} maximumTrackTintColor={color + '20'} thumbTintColor={color} />
         <View style={{flexDirection: 'row', justifyContent: 'space-between'}}><Text style={{fontSize: 9, color: Colors.textHint}}>{min}</Text><Text style={{fontSize: 9, color: Colors.textHint}}>{max}</Text></View>
@@ -38,60 +44,73 @@ function ParamSlider({icon, title, subtitle, color, bg, value, min, max, step, d
 function AutomationParamCard({
   title, subtitle, icon, gradient, accentColor, bgColor,
   ruleEnabled, onToggleRule,
-  sliders, hasChanges, saving, onConfirm, confirmDisabled,
+  sliders, hasChanges, saving, onConfirm, confirmDisabled, disabled,
 }: {
   title: string; subtitle: string; icon: string; gradient: readonly [string, string, ...string[]];
   accentColor: string; bgColor: string;
   ruleEnabled: boolean; onToggleRule: (v: boolean) => void;
   sliders?: React.ReactNode;
-  hasChanges?: boolean; saving?: boolean; onConfirm?: () => void; confirmDisabled?: boolean;
+  hasChanges?: boolean; saving?: boolean; onConfirm?: () => void; confirmDisabled?: boolean; disabled?: boolean;
 }) {
+  const isEffectivelyDisabled = disabled;
+
   return (
-    <View style={styles.paramCard}>
-      <LinearGradient colors={gradient} start={{x: 0, y: 0}} end={{x: 1, y: 0}} style={styles.paramCardAccent} />
+    <View style={[styles.paramCard, isEffectivelyDisabled && {borderColor: Colors.cardBorder, shadowOpacity: 0.05}]}>
+      {/* ── Accent bar: grey when disabled ── */}
+      <LinearGradient
+        colors={isEffectivelyDisabled ? (['#D0D5DD', '#E0E4E8'] as const) : gradient}
+        start={{x: 0, y: 0}} end={{x: 1, y: 0}}
+        style={styles.paramCardAccent}
+      />
       <View style={styles.paramCardInner}>
         {/* ── Header ── */}
-        <View style={styles.paramHeader}>
+        <View style={[styles.paramHeader, {marginBottom: 8}]}>
           <View style={styles.paramHeaderLeft}>
-            <View style={[styles.paramIconBadge, {backgroundColor: bgColor}]}>
-              <Ionicons name={icon as any} size={22} color={accentColor} />
+            <View style={[styles.paramIconBadge, {backgroundColor: isEffectivelyDisabled ? '#E8ECF1' : bgColor}]}>
+              <Ionicons name={icon as any} size={22} color={isEffectivelyDisabled ? '#9EAAB8' : accentColor} />
             </View>
             <View style={{flex: 1}}>
-              <Text style={styles.paramTitle}>{title}</Text>
-              <Text style={styles.paramSubtitle}>{subtitle}</Text>
+              <Text style={[styles.paramTitle, isEffectivelyDisabled && {color: '#6B7A8F'}]}>{title}</Text>
+              <Text style={[styles.paramSubtitle, isEffectivelyDisabled && {color: '#9EAAB8'}]}>{subtitle}</Text>
             </View>
           </View>
           <View style={styles.paramToggleWrap}>
             <Switch
-              value={ruleEnabled}
+              value={disabled ? false : ruleEnabled}
               onValueChange={onToggleRule}
+              disabled={disabled}
               trackColor={{false: Colors.cardBorder, true: accentColor + '60'}}
-              thumbColor={ruleEnabled ? accentColor : '#ccc'}
+              thumbColor={disabled ? '#ccc' : (ruleEnabled ? accentColor : '#ccc')}
             />
           </View>
         </View>
 
-        {/* ── Divider ── */}
-        <View style={styles.paramDivider} />
+        {/* ── Disabled banner ── */}
+        {isEffectivelyDisabled && (
+          <View style={styles.disabledBanner}>
+            <View style={styles.disabledBannerDot} />
+            <Ionicons name="pause-circle" size={14} color="#9EAAB8" />
+            <Text style={styles.disabledBannerText}>Auto-Pump is OFF — enable from toggle above</Text>
+          </View>
+        )}
 
-        {/* ── Sliders ── */}
+        {/* ── Sliders (greyscale colors passed via color/bg props) ── */}
         {sliders && (
-          <View style={{opacity: ruleEnabled ? 1 : 0.5}}>
+          <View>
             {sliders}
           </View>
         )}
 
-        {/* ── Confirm button ── */}
         {hasChanges && onConfirm && (
           <TouchableOpacity
-            style={[styles.paramConfirmBtn, saving && {opacity: 0.5}, confirmDisabled && {opacity: 0.3}]}
+            style={[styles.paramConfirmBtn, (saving || disabled) && {backgroundColor: '#E0E4E8'}]}
             onPress={onConfirm}
-            disabled={saving || confirmDisabled}
+            disabled={saving || confirmDisabled || disabled}
           >
             {saving ? (
-              <ActivityIndicator size="small" color="#fff" />
+              <ActivityIndicator size="small" color={isEffectivelyDisabled ? '#9EAAB8' : '#fff'} />
             ) : (
-              <><Ionicons name="checkmark-circle" size={16} color="#fff" /><Text style={styles.paramConfirmText}>Confirm & Apply</Text></>
+              <><Ionicons name="checkmark-circle" size={16} color={isEffectivelyDisabled ? '#9EAAB8' : '#fff'} /><Text style={[styles.paramConfirmText, isEffectivelyDisabled && {color: '#6B7A8F'}]}>Confirm & Apply</Text></>
             )}
           </TouchableOpacity>
         )}
@@ -125,31 +144,50 @@ export default function AutomationScreen() {
   const [loading, setLoading] = useState(true);
   const [savingWater, setSavingWater] = useState(false);
   const [savingTds, setSavingTds] = useState(false);
+  const [savingPh, setSavingPh] = useState(false);
   const [rules, setRules] = useState({ph: true, tds: true, water: true});
   const nightModeActive = useNightModeStore((s) => s.active);
   const setNightStatus = useNightModeStore((s) => s.setStatus);
 
-  // ── Fetch data on mount ──────────────────────────────────────────────
-  useEffect(() => {
-    (async () => {
-      try {
-        const data = await configApi.get(activeDeviceId);
-        const t: ThresholdDraft = {
-          jarak_on: data.jarak_on ?? 5, jarak_off: data.jarak_off ?? 2,
-          tds_on: data.tds_on ?? 95.0, tds_off: data.tds_off ?? 105.0,
-        };
-        setServerThresholds(t); setDraft(t);
+  // ── Fetch data on mount & every time screen is focused ────────────────
+  // useFocusEffect refetches automation config whenever user comes back to
+  // this tab (e.g. after disabling auto-pump from Dashboard).
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      (async () => {
+        setLoading(true);
         try {
-          const rulesData = await automationApi.get(activeDeviceId);
-          setAutoEnabled(rulesData.auto_enabled);
-          setRules({ph: rulesData.rule_ph, tds: rulesData.rule_tds, water: rulesData.rule_water});
-        } catch { /* defaults */ }
-      } catch {
-        const t: ThresholdDraft = {jarak_on: 5, jarak_off: 2, tds_on: 95.0, tds_off: 105.0};
-        setServerThresholds(t); setDraft(t);
-      } finally {setLoading(false)}
-    })();
-  }, [activeDeviceId]);
+          const data = await configApi.get(activeDeviceId);
+          if (cancelled) return;
+          const t: ThresholdDraft = {
+            jarak_on: data.jarak_on ?? 5, jarak_off: data.jarak_off ?? 2,
+            tds_on: data.tds_on ?? 95.0, tds_off: data.tds_off ?? 105.0,
+            ph_min: data.ph_min ?? 5.5, ph_max: data.ph_max ?? 6.5,
+          };
+          setServerThresholds(t); setDraft(t);
+
+          // Fetch automation rules (master toggle + toggles)
+          try {
+            const rulesData = await automationApi.get(activeDeviceId);
+            if (cancelled) return;
+            setAutoEnabled(rulesData.auto_enabled);
+            setRules({ph: rulesData.rule_ph, tds: rulesData.rule_tds, water: rulesData.rule_water});
+          } catch {
+            // If automation API fails, keep current state (don't reset to true)
+            // autoEnabled & rules retain their existing values
+          }
+        } catch {
+          if (cancelled) return;
+          const t: ThresholdDraft = {jarak_on: 5, jarak_off: 2, tds_on: 95.0, tds_off: 105.0, ph_min: 5.5, ph_max: 6.5};
+          setServerThresholds(t); setDraft(t);
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      })();
+      return () => { cancelled = true; };
+    }, [activeDeviceId])
+  );
 
   // Fetch night mode
   useEffect(() => {
@@ -169,6 +207,11 @@ export default function AutomationScreen() {
     return draft.tds_on !== serverThresholds.tds_on || draft.tds_off !== serverThresholds.tds_off;
   }, [serverThresholds, draft]);
 
+  const hasPhChanges = useCallback(() => {
+    if (!serverThresholds || !draft) return false;
+    return draft.ph_min !== serverThresholds.ph_min || draft.ph_max !== serverThresholds.ph_max;
+  }, [serverThresholds, draft]);
+
   // ── Save rules ────────────────────────────────────────────────────────
   const saveRules = useCallback(async (newAutoEnabled: boolean, newRules: typeof rules) => {
     try {
@@ -177,6 +220,15 @@ export default function AutomationScreen() {
         auto_enabled: newAutoEnabled,
         rule_ph: newRules.ph, rule_tds: newRules.tds, rule_water: newRules.water,
       });
+      // ⚡ Sync auto_enabled to sensorStore so Dashboard & PID screens
+      // immediately reflect the change (AUTO badge & autoNoteRow)
+      const storeReading = useSensorStore.getState().latestReading;
+      if (storeReading) {
+        useSensorStore.getState().setLatestReading({
+          ...storeReading,
+          auto_enabled: newAutoEnabled,
+        });
+      }
     } catch { /* silent */ }
   }, [activeDeviceId]);
 
@@ -186,6 +238,8 @@ export default function AutomationScreen() {
     saveRules(value, rules);
   }, [rules, saveRules]);
 
+  // ── Simple rule toggle ─────────────────────────────────────────────
+  // Toggle individual rule ON/OFF without affecting auto_enabled or other rules
   const handleRuleToggle = useCallback((rule: 'ph' | 'tds' | 'water', value: boolean) => {
     const newRules = {...rules, [rule]: value};
     setRules(newRules);
@@ -206,6 +260,7 @@ export default function AutomationScreen() {
           await configApi.update({
             device_id: activeDeviceId, jarak_on: draft.jarak_on, jarak_off: draft.jarak_off,
             tds_on: serverThresholds?.tds_on ?? draft.tds_on, tds_off: serverThresholds?.tds_off ?? draft.tds_off,
+            ph_min: draft.ph_min, ph_max: draft.ph_max,
           });
           setServerThresholds((prev) => prev ? {...prev, jarak_on: draft.jarak_on, jarak_off: draft.jarak_off} : null);
           Alert.alert('Water Level', 'Thresholds synced to hardware');
@@ -230,11 +285,38 @@ export default function AutomationScreen() {
             device_id: activeDeviceId, jarak_on: serverThresholds?.jarak_on ?? draft.jarak_on,
             jarak_off: serverThresholds?.jarak_off ?? draft.jarak_off,
             tds_on: draft.tds_on, tds_off: draft.tds_off,
+            ph_min: draft.ph_min, ph_max: draft.ph_max,
           });
           setServerThresholds((prev) => prev ? {...prev, tds_on: draft.tds_on, tds_off: draft.tds_off} : null);
           Alert.alert('TDS', 'Thresholds synced to hardware');
         } catch (err: any) {Alert.alert('Error', err.message || 'Failed')}
         finally {setSavingTds(false)}
+      }},
+    ]);
+  }, [draft, serverThresholds, activeDeviceId]);
+
+  // ── Confirm save: pH thresholds ───────────────────────────────────────
+  const handlePhConfirm = useCallback(async () => {
+    if (!draft) return;
+    const changes: string[] = [];
+    if (draft.ph_min !== serverThresholds?.ph_min) changes.push(`pH Minimum: ${serverThresholds?.ph_min?.toFixed(1)} → ${draft.ph_min.toFixed(1)}`);
+    if (draft.ph_max !== serverThresholds?.ph_max) changes.push(`pH Down Threshold: ${serverThresholds?.ph_max?.toFixed(1)} → ${draft.ph_max.toFixed(1)}`);
+    Alert.alert('Review pH Changes', (changes.length ? changes.join('\n') : 'No changes') + '\n\n💡 Pompa 2 (pH DOWN) activates when pH exceeds the upper threshold\nand stops only when pH drops to the minimum threshold.', [
+      {text: 'Cancel', style: 'cancel', onPress: () => setDraft(serverThresholds ? {...serverThresholds} : null)},
+      {text: 'Confirm', onPress: async () => {
+        setSavingPh(true);
+        try {
+          await configApi.update({
+            device_id: activeDeviceId, jarak_on: serverThresholds?.jarak_on ?? draft.jarak_on,
+            jarak_off: serverThresholds?.jarak_off ?? draft.jarak_off,
+            tds_on: serverThresholds?.tds_on ?? draft.tds_on,
+            tds_off: serverThresholds?.tds_off ?? draft.tds_off,
+            ph_min: draft.ph_min, ph_max: draft.ph_max,
+          });
+          setServerThresholds((prev) => prev ? {...prev, ph_min: draft.ph_min, ph_max: draft.ph_max} : null);
+          Alert.alert('pH Level', 'Thresholds synced to hardware');
+        } catch (err: any) {Alert.alert('Error', err.message || 'Failed')}
+        finally {setSavingPh(false)}
       }},
     ]);
   }, [draft, serverThresholds, activeDeviceId]);
@@ -261,11 +343,18 @@ export default function AutomationScreen() {
     </SafeAreaView>
   );
 
-  const t = draft ?? serverThresholds ?? {jarak_on: 5, jarak_off: 2, tds_on: 105.0, tds_off: 95.0};
+  const t = draft ?? serverThresholds ?? {jarak_on: 5, jarak_off: 2, tds_on: 105.0, tds_off: 95.0, ph_min: 5.5, ph_max: 6.5};
 
   // ── Water level pct helpers ───────────────────────────────────────────
-  const waterPct = (cm: number) => Math.round(((7 - Math.min(cm, 7)) / 7) * 100);
+  const waterPct = (cm: number) => ((7 - Math.min(cm, 7)) / 7) * 100;
   const waterCannotEdit = savingWater || !autoEnabled || !rules.water;
+
+  // ── Format water percentage for display ──
+  const waterDisplay = (cm: number) => {
+    const pct = waterPct(cm);
+    const rounded = Math.round(pct);
+    return pct === rounded ? `${rounded}%` : `${pct.toFixed(1)}%`;
+  };
 
   return (
     <SafeAreaView style={{flex: 1, backgroundColor: Colors.background}} edges={['top']}>
@@ -312,41 +401,44 @@ export default function AutomationScreen() {
           hasChanges={hasWaterChanges()}
           saving={savingWater}
           onConfirm={handleWaterConfirm}
+          disabled={!autoEnabled}
           confirmDisabled={!autoEnabled}
           sliders={
             <>
               <ParamSlider
                 icon="arrow-up-circle"
                 title="Jarak ON (Refill)"
-                subtitle={`Distance > ${t.jarak_on}cm → water ${waterPct(t.jarak_on)}% — activate refill`}
-                color={rules.water ? Colors.waterTeal : Colors.textHint}
-                bg={rules.water ? Colors.waterBg : Colors.cardBorder}
+                subtitle={`Distance > ${t.jarak_on.toFixed(1)}cm → water ${waterDisplay(t.jarak_on)} — activate refill`}
+                color={!autoEnabled ? Colors.textHint : (rules.water ? Colors.waterTeal : Colors.textHint)}
+                bg={!autoEnabled ? Colors.cardBorder : (rules.water ? Colors.waterBg : Colors.cardBorder)}
                 value={t.jarak_on}
-                min={1}
-                max={7}
-                step={1}
-                displayValue={`${t.jarak_on} cm`}
-                onChange={(v) => setDraft((d) => d ? {...d, jarak_on: v, jarak_off: Math.min(d.jarak_off, v - 1)} : null)}
+                min={0.0}
+                max={7.0}
+                step={0.1}
+                displayValue={`${t.jarak_on.toFixed(1)} cm`}
+                extraDisplay={waterDisplay(t.jarak_on)}
+                onChange={(v) => setDraft((d) => d ? {...d, jarak_on: Math.round(v * 10) / 10, jarak_off: Math.min(d.jarak_off ?? 2, Math.round((v - 0.3) * 10) / 10)} : null)}
                 disabled={waterCannotEdit}
               />
               <ParamSlider
                 icon="arrow-down-circle"
                 title="Jarak OFF (Stop)"
-                subtitle={`Distance < ${t.jarak_off}cm → water ${waterPct(t.jarak_off)}% — stop refill`}
-                color={rules.water ? Colors.waterTeal : Colors.textHint}
-                bg={rules.water ? Colors.waterBg : Colors.cardBorder}
+                subtitle={`Distance < ${t.jarak_off.toFixed(1)}cm → water ${waterDisplay(t.jarak_off)} — stop refill`}
+                color={!autoEnabled ? Colors.textHint : (rules.water ? Colors.waterTeal : Colors.textHint)}
+                bg={!autoEnabled ? Colors.cardBorder : (rules.water ? Colors.waterBg : Colors.cardBorder)}
                 value={t.jarak_off}
-                min={0}
-                max={Math.max(0, t.jarak_on - 1)}
-                step={1}
-                displayValue={`${t.jarak_off} cm`}
-                onChange={(v) => setDraft((d) => d ? {...d, jarak_off: v} : null)}
+                min={0.0}
+                max={Math.max(0.1, t.jarak_on - 0.3)}
+                step={0.1}
+                displayValue={`${t.jarak_off.toFixed(1)} cm`}
+                extraDisplay={waterDisplay(t.jarak_off)}
+                onChange={(v) => setDraft((d) => d ? {...d, jarak_off: Math.round(v * 10) / 10} : null)}
                 disabled={waterCannotEdit}
               />
               <View style={styles.previewRow}>
-                <Ionicons name="information-circle" size={12} color={Colors.waterTeal} />
+                <Ionicons name="information-circle" size={12} color={!autoEnabled ? Colors.textHint : Colors.waterTeal} />
                 <Text style={styles.previewText}>
-                  Water level triggers refill at {waterPct(t.jarak_on)}% and stops at {waterPct(t.jarak_off)}%
+                  Refill activates at {waterDisplay(t.jarak_on)} water ({t.jarak_on.toFixed(1)}cm) and stops at {waterDisplay(t.jarak_off)} water ({t.jarak_off.toFixed(1)}cm)
                 </Text>
               </View>
             </>
@@ -354,45 +446,65 @@ export default function AutomationScreen() {
         />
 
         {/* ════════════════════════════════════════════════════════════
-           pH LEVEL CARD — toggle + info (no sliders)
+           pH LEVEL CARD — toggle + ph_max slider + confirm
+           ════════════════════════════════════════════════════════════
+           💡 pH DOWN only: system only has a pH DOWN pump.
+             - Pompa 2 ON when pH > pH Down Threshold
+             - pH notifcations are sent when pH exceeds the threshold
            ════════════════════════════════════════════════════════════ */}
-        <View style={styles.paramCard}>
-          <LinearGradient colors={[Colors.tempBlue, '#42A5F5'] as const} start={{x: 0, y: 0}} end={{x: 1, y: 0}} style={styles.paramCardAccent} />
-          <View style={styles.paramCardInner}>
-            <View style={styles.paramHeader}>
-              <View style={styles.paramHeaderLeft}>
-                <View style={[styles.paramIconBadge, {backgroundColor: Colors.tempLight}]}>
-                  <Ionicons name="flask" size={22} color={Colors.tempBlue} />
-                </View>
-                <View style={{flex: 1}}>
-                  <Text style={styles.paramTitle}>pH Level</Text>
-                  <Text style={styles.paramSubtitle}>Nutrient acidity automation</Text>
-                </View>
-              </View>
-              <View style={styles.paramToggleWrap}>
-                <Switch
-                  value={rules.ph}
-                  onValueChange={(v) => handleRuleToggle('ph', v)}
-                  trackColor={{false: Colors.cardBorder, true: Colors.tempBlue + '60'}}
-                  thumbColor={rules.ph ? Colors.tempBlue : '#ccc'}
-                />
-              </View>
-            </View>
-
-            <View style={styles.paramDivider} />
-
-            <View style={[styles.phInfoContainer, {opacity: rules.ph ? 1 : 0.5}]}>
-              <InfoRow icon="flask" label="Target Range" value="5.5 – 6.5 pH" color={Colors.tempBlue} />
-              <InfoRow icon="bulb" label="Action" value="Pompa 2 (pH Dosing) ON when out of range" color={Colors.accentGreen} />
-              <View style={[styles.phInfoNote, {backgroundColor: Colors.tempLight + '50'}]}>
-                <Ionicons name="information-circle" size={14} color={Colors.tempBlue} />
-                <Text style={styles.phInfoNoteText}>
-                  pH thresholds are preset for optimal nutrient absorption. No manual adjustment needed.
+        <AutomationParamCard
+          title="pH Level (DOWN)"
+          subtitle="pH DOWN threshold for Pompa 2"
+          icon="flask"
+          gradient={[Colors.tempBlue, '#42A5F5'] as const}
+          accentColor={Colors.tempBlue}
+          bgColor={Colors.tempLight}
+          ruleEnabled={rules.ph}
+          onToggleRule={(v) => handleRuleToggle('ph', v)}
+          hasChanges={hasPhChanges()}
+          saving={savingPh}
+          onConfirm={handlePhConfirm}
+          disabled={!autoEnabled}
+          confirmDisabled={!autoEnabled}
+          sliders={
+            <>
+              <ParamSlider
+                icon="arrow-up-circle"
+                title="pH Down Threshold"
+                subtitle={`pH > ${t.ph_max.toFixed(1)} → Pompa 2 ON (pH DOWN dosing starts)`}
+                color={!autoEnabled ? Colors.textHint : (rules.ph ? Colors.tempBlue : Colors.textHint)}
+                bg={!autoEnabled ? Colors.cardBorder : (rules.ph ? Colors.tempLight : Colors.cardBorder)}
+                value={t.ph_max}
+                min={Math.min(14, t.ph_min + 0.3)}
+                max={14}
+                step={0.1}
+                displayValue={t.ph_max.toFixed(1)}
+                onChange={(v) => setDraft((d) => d ? {...d, ph_max: Math.round(v * 10) / 10, ph_min: Math.min(d.ph_min ?? 5.5, Math.round((v - 0.3) * 10) / 10)} : null)}
+                disabled={savingPh || !autoEnabled || !rules.ph}
+              />
+              <ParamSlider
+                icon="arrow-down-circle"
+                title="pH Minimum (Stop)"
+                subtitle={`pH ≤ ${t.ph_min.toFixed(1)} → Pompa 2 OFF (pH sufficiently low)`}
+                color={!autoEnabled ? Colors.textHint : (rules.ph ? Colors.tempBlue : Colors.textHint)}
+                bg={!autoEnabled ? Colors.cardBorder : (rules.ph ? Colors.tempLight : Colors.cardBorder)}
+                value={t.ph_min}
+                min={0.3}
+                max={Math.max(0.6, t.ph_max - 0.3)}
+                step={0.1}
+                displayValue={t.ph_min.toFixed(1)}
+                onChange={(v) => setDraft((d) => d ? {...d, ph_min: Math.round(v * 10) / 10, ph_max: Math.max(d.ph_max ?? 6.5, Math.round((v + 0.3) * 10) / 10)} : null)}
+                disabled={savingPh || !autoEnabled || !rules.ph}
+              />
+              <View style={styles.previewRow}>
+                <Ionicons name="information-circle" size={12} color={!autoEnabled ? Colors.textHint : Colors.tempBlue} />
+                <Text style={styles.previewText}>
+                  Pompa 2 (pH DOWN) activates when pH exceeds {t.ph_max.toFixed(1)} and stays ON continuously — it stops only when pH drops to ≤ {t.ph_min.toFixed(1)}
                 </Text>
               </View>
-            </View>
-          </View>
-        </View>
+            </>
+          }
+        />
 
         {/* ════════════════════════════════════════════════════════════
            TDS CARD — toggle + tds sliders + confirm
@@ -409,6 +521,7 @@ export default function AutomationScreen() {
           hasChanges={hasTdsChanges()}
           saving={savingTds}
           onConfirm={handleTdsConfirm}
+          disabled={!autoEnabled}
           confirmDisabled={!autoEnabled}
           sliders={
             <>
@@ -416,8 +529,8 @@ export default function AutomationScreen() {
                 icon="arrow-down-circle"
                 title="TDS ON (Dosing)"
                 subtitle={`TDS < ${t.tds_on.toFixed(0)} ppm — nutrients low, activate Pompa 2`}
-                color={rules.tds ? Colors.energyOrange : Colors.textHint}
-                bg={rules.tds ? '#FFF3E0' : Colors.cardBorder}
+                color={!autoEnabled ? Colors.textHint : (rules.tds ? Colors.energyOrange : Colors.textHint)}
+                bg={!autoEnabled ? Colors.cardBorder : (rules.tds ? '#FFF3E0' : Colors.cardBorder)}
                 value={t.tds_on}
                 min={0}
                 max={Math.max(0, t.tds_off - 5)}
@@ -430,8 +543,8 @@ export default function AutomationScreen() {
                 icon="arrow-up-circle"
                 title="TDS OFF (Stop)"
                 subtitle={`TDS > ${t.tds_off.toFixed(0)} ppm — nutrients sufficient, stop Pompa 2`}
-                color={rules.tds ? Colors.energyOrange : Colors.textHint}
-                bg={rules.tds ? '#FFF3E0' : Colors.cardBorder}
+                color={!autoEnabled ? Colors.textHint : (rules.tds ? Colors.energyOrange : Colors.textHint)}
+                bg={!autoEnabled ? Colors.cardBorder : (rules.tds ? '#FFF3E0' : Colors.cardBorder)}
                 value={t.tds_off}
                 min={t.tds_on + 5}
                 max={2000}
@@ -441,7 +554,7 @@ export default function AutomationScreen() {
                 disabled={savingTds || !autoEnabled || !rules.tds}
               />
               <View style={styles.previewRow}>
-                <Ionicons name="information-circle" size={12} color={Colors.energyOrange} />
+                <Ionicons name="information-circle" size={12} color={!autoEnabled ? Colors.textHint : Colors.energyOrange} />
                 <Text style={styles.previewText}>
                   Nutrients dosing activates below {t.tds_on.toFixed(0)} ppm and stops above {t.tds_off.toFixed(0)} ppm
                 </Text>
@@ -523,6 +636,19 @@ const styles = StyleSheet.create({
   // Preview row (info line below sliders)
   previewRow: {flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4},
   previewText: {fontSize: 10, color: Colors.textSecondary, fontWeight: '500', flex: 1, lineHeight: 14},
+
+  // Disabled banner (shown when auto-pump is OFF)
+  disabledBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingVertical: 10, paddingHorizontal: 14,
+    backgroundColor: '#F8F9FA', borderRadius: 12, marginBottom: 12,
+  },
+  disabledBannerText: {
+    fontSize: 11, color: Colors.textHint, fontWeight: '600', flex: 1, lineHeight: 16,
+  },
+  disabledBannerDot: {
+    width: 6, height: 6, borderRadius: 3, backgroundColor: '#D0D5DD',
+  },
 
   // ── pH info ──
   phInfoContainer: {gap: 10},

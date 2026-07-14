@@ -18,6 +18,9 @@ export default function ProfileScreen({navigation}: any) {
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [showOldPw, setShowOldPw] = useState(false);
+  const [showNewPw, setShowNewPw] = useState(false);
+  const [showConfirmPw, setShowConfirmPw] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [showDeletePrompt, setShowDeletePrompt] = useState(false);
@@ -47,7 +50,7 @@ export default function ProfileScreen({navigation}: any) {
 
   const handleDeleteAccount = () => {
     if (deleteInput.trim().toLowerCase() !== 'delete my account') {Alert.alert('Confirmation Required', 'Please type "delete my account" exactly to confirm.'); return;}
-    Alert.alert('Final Warning', 'This action is irreversible. All your devices, sensor data, energy records, water history, and thresholds will be permanently erased.', [
+    Alert.alert('Final Warning', 'This action is irreversible. All your devices, sensor data, water history, and thresholds will be permanently erased.', [
       {text: 'Cancel', style: 'cancel', onPress: () => {setShowDeletePrompt(false); setDeleteInput('');}},
       {text: 'Permanently Delete', style: 'destructive', onPress: async () => {
         setDeleting(true);
@@ -103,9 +106,33 @@ export default function ProfileScreen({navigation}: any) {
         {editMode === 'password' && (
           <View style={styles.section}>
             <Text style={styles.formTitle}>Change Password</Text>
-            <View style={styles.inputGroup}><Text style={styles.inputLabel}>Current Password</Text><TextInput style={styles.input} value={oldPassword} onChangeText={setOldPassword} placeholder="Enter current password" placeholderTextColor={Colors.textHint} secureTextEntry /></View>
-            <View style={styles.inputGroup}><Text style={styles.inputLabel}>New Password</Text><TextInput style={styles.input} value={newPassword} onChangeText={setNewPassword} placeholder="Min. 6 characters" placeholderTextColor={Colors.textHint} secureTextEntry /></View>
-            <View style={styles.inputGroup}><Text style={styles.inputLabel}>Confirm New Password</Text><TextInput style={styles.input} value={confirmPassword} onChangeText={setConfirmPassword} placeholder="Repeat new password" placeholderTextColor={Colors.textHint} secureTextEntry /></View>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Current Password</Text>
+              <View style={styles.pwContainer}>
+                <TextInput style={styles.pwInput} value={oldPassword} onChangeText={setOldPassword} placeholder="Enter current password" placeholderTextColor={Colors.textHint} secureTextEntry={!showOldPw} />
+                <TouchableOpacity style={styles.pwToggle} onPress={() => setShowOldPw(!showOldPw)}>
+                  <Ionicons name={showOldPw ? 'eye-off' : 'eye'} size={20} color={Colors.textHint} />
+                </TouchableOpacity>
+              </View>
+            </View>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>New Password</Text>
+              <View style={styles.pwContainer}>
+                <TextInput style={styles.pwInput} value={newPassword} onChangeText={setNewPassword} placeholder="Min. 6 characters" placeholderTextColor={Colors.textHint} secureTextEntry={!showNewPw} />
+                <TouchableOpacity style={styles.pwToggle} onPress={() => setShowNewPw(!showNewPw)}>
+                  <Ionicons name={showNewPw ? 'eye-off' : 'eye'} size={20} color={Colors.textHint} />
+                </TouchableOpacity>
+              </View>
+            </View>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Confirm New Password</Text>
+              <View style={styles.pwContainer}>
+                <TextInput style={styles.pwInput} value={confirmPassword} onChangeText={setConfirmPassword} placeholder="Repeat new password" placeholderTextColor={Colors.textHint} secureTextEntry={!showConfirmPw} />
+                <TouchableOpacity style={styles.pwToggle} onPress={() => setShowConfirmPw(!showConfirmPw)}>
+                  <Ionicons name={showConfirmPw ? 'eye-off' : 'eye'} size={20} color={Colors.textHint} />
+                </TouchableOpacity>
+              </View>
+            </View>
             <TouchableOpacity style={[styles.saveBtn, saving && {opacity: 0.6}]} onPress={handleSavePassword} disabled={saving}>{saving ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={styles.saveBtnText}>Update Password</Text>}</TouchableOpacity>
           </View>
         )}
@@ -141,7 +168,7 @@ export default function ProfileScreen({navigation}: any) {
           <View style={styles.modal}>
             <View style={styles.modalHeader}><View style={[styles.modalIcon, {backgroundColor: Colors.statusRed + '18'}]}><Ionicons name="warning" size={24} color={Colors.statusRed} /></View></View>
             <Text style={styles.modalTitle}>Remove Device</Text>
-            <Text style={styles.modalDesc}>This will permanently delete all sensor data, energy records, and water history for this device.</Text>
+            <Text style={styles.modalDesc}>This will permanently delete all sensor data and water history for this device.</Text>
             <Text style={styles.modalHint}>Type <Text style={{fontWeight: '800'}}>delete_{deleteDevice?.name || deleteDevice?.deviceId}</Text> to confirm:</Text>
             <TextInput style={styles.modalInput} value={deleteConfirmText} onChangeText={setDeleteConfirmText} placeholder={`delete_${deleteDevice?.name || deleteDevice?.deviceId}`} placeholderTextColor={Colors.textHint} autoCapitalize="none" />
             <View style={styles.modalActions}>
@@ -157,7 +184,7 @@ export default function ProfileScreen({navigation}: any) {
           <View style={styles.modal}>
             <View style={styles.modalHeader}><View style={[styles.modalIcon, {backgroundColor: Colors.statusRed + '18'}]}><Ionicons name="warning" size={24} color={Colors.statusRed} /></View></View>
             <Text style={styles.modalTitle}>Delete Account</Text>
-            <Text style={styles.modalDesc}>This permanently removes your account, all devices, sensor readings, energy records, and water history. This cannot be undone.</Text>
+            <Text style={styles.modalDesc}>This permanently removes your account, all devices, sensor readings, and water history. This cannot be undone.</Text>
             <Text style={styles.modalHint}>Type <Text style={{fontWeight: '800'}}>delete my account</Text> to confirm:</Text>
             <TextInput style={styles.modalInput} value={deleteInput} onChangeText={setDeleteInput} placeholder="delete my account" placeholderTextColor={Colors.textHint} autoCapitalize="none" />
             <View style={styles.modalActions}>
@@ -192,6 +219,9 @@ const styles = StyleSheet.create({
   inputGroup: {marginBottom: 14},
   inputLabel: {fontSize: 12, fontWeight: '600', color: Colors.textSecondary, marginBottom: 6},
   input: {backgroundColor: '#F8F9FA', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 14, fontSize: 15, fontWeight: '500', color: Colors.textPrimary, borderWidth: 1, borderColor: Colors.cardBorder},
+  pwContainer: {flexDirection: 'row', alignItems: 'center', backgroundColor: '#F8F9FA', borderRadius: 14, borderWidth: 1, borderColor: Colors.cardBorder},
+  pwInput: {flex: 1, paddingHorizontal: 16, paddingVertical: 14, fontSize: 15, fontWeight: '500', color: Colors.textPrimary},
+  pwToggle: {paddingHorizontal: 14, paddingVertical: 10},
   saveBtn: {backgroundColor: Colors.primaryGreen, borderRadius: 14, paddingVertical: 14, alignItems: 'center', marginTop: 8, shadowColor: Colors.primaryGreen, shadowOffset: {width: 0, height: 4}, shadowOpacity: 0.2, shadowRadius: 8, elevation: 4},
   saveBtnText: {fontSize: 15, fontWeight: '700', color: '#FFF', letterSpacing: 0.3},
   deviceRow: {flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 14, borderRadius: 14, marginBottom: 8},

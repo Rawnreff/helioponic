@@ -9,19 +9,21 @@ Topics subscribed:
   - helioponic/alarm/uplink   (QoS 1) — water level alarm events
   - helioponic/status/uplink  (QoS 1) — device heartbeat every 30s
 
-CRITICAL DESIGN RULE (PRD-aligned):
-  Hardware pump states (pompa1, pompa2) from the ESP32 are the SOURCE OF TRUTH.
-  The backend MUST NOT override them. It persists the ESP32's actual reported
-  states and only evaluates thresholds for notification purposes (read-only).
+ARCHITECTURE (Unified Single-Source):
+  ALL incoming telemetry — whether from physical ESP32 or software simulator —
+  is treated as a strict, read-only Source of Truth. The backend persists
+  pump states EXACTLY as reported and NEVER computes or overrides them.
+  The automation engine (evaluate_thresholds) is used READ-ONLY for
+  notification detection, never for mutating persisted data.
 
 Data flow:
   1. Receive JSON payload from MQTT topic
   2. Parse into appropriate model
-  3. For sensor uplink: persist ESP32's real pump states, compute deltas,
-     evaluate thresholds for notifications only (never override hardware state)
+  3. For sensor uplink: persist reported pump states AS-IS,
+     evaluate thresholds for notifications only (read-only)
   4. For alarm uplink: create water_alarm notification, broadcast via WebSocket
   5. For status uplink: update device online status, broadcast via WebSocket
-  6. Batch energy/water writes at 60s intervals (aggregation)
+  6. Batch water level writes at 60s intervals (aggregation)
 """
 
 import asyncio
@@ -35,9 +37,7 @@ import paho.mqtt.client as mqtt
 
 from app.core.config import settings
 from app.models.sensor import SensorReading, SensorRecord
-from app.models.energy import EnergyRecord
 from app.models.water import WaterRecord
-from app.services.energy import EnergyCalculator
 from app.services.water import WaterCalculator
 from app.services.automation import evaluate_thresholds, get_automation_rules
 
@@ -51,7 +51,7 @@ TOPIC_STATUS_UPLINK = "helioponic/status/uplink"
 # Default interval for delta calculations when timing info is unavailable
 INTERVAL_SECONDS = 1.0
 
-# Energy/water aggregation interval (seconds) — batch writes, not every second
+# Water aggregation interval (seconds) — batch writes, not every second
 AGGREGATION_INTERVAL_S = 60.0
 
 
@@ -63,19 +63,16 @@ class MQTTSubscriber:
     Incoming messages are dispatched to the asyncio event loop via
     run_coroutine_threadsafe() for non-blocking async processing.
 
-    ⚠️  IMPORTANT: This subscriber persists the ESP32's ACTUAL pump states.
-    It does NOT override them with backend-computed automation values.
-    The automation engine (evaluate_thresholds) is used READ-ONLY for
-    notification detection, never for mutating hardware state in the DB.
+    UNIFIED INGESTION:
+      All telemetry is treated as Source of Truth — persisted AS-IS.
+      The automation engine is used READ-ONLY for notification detection.
     """
 
     def __init__(
         self,
-        energy_calc: EnergyCalculator,
         water_calc: WaterCalculator,
         on_sensor_reading: Optional[Callable[[dict], Awaitable[None]]] = None,
     ):
-        self.energy_calc = energy_calc
         self.water_calc = water_calc
         self.on_sensor_reading = on_sensor_reading
 
@@ -85,20 +82,14 @@ class MQTTSubscriber:
         # Reference to the event loop for dispatching async callbacks
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
-        # State for delta calculations
-        self._prev_jarak_cm: int = 999
-        self._prev_timestamp: datetime = datetime.now(UTC)
-        self._initialized: bool = False
-
         # State for notification dedup (per-device keyed by device_id)
         self._state: dict[str, dict] = {}  # device_id -> {prev_p1, prev_p2, last_auto_notif, ...}
 
-        # State for energy/water aggregation (per-device, batched every 60s)
-        self._agg_state: dict[str, dict] = {}  # device_id -> {p1_wh, p2_wh, total_wh, water_pct_sum, water_count, last_flush}
+        # State for water level aggregation (per-device, batched every 60s)
+        self._agg_state: dict[str, dict] = {}  # device_id -> {water_pct_sum, water_count, last_flush}
 
         # Callbacks for database persistence (set by app)
         self.save_sensor: Optional[Callable[[dict], Awaitable[None]]] = None
-        self.save_energy: Optional[Callable[[dict], Awaitable[None]]] = None
         self.save_water: Optional[Callable[[dict], Awaitable[None]]] = None
         self.save_notification: Optional[Callable[[dict], Awaitable[None]]] = None
         self.get_device_config: Optional[Callable[[str], Awaitable[Optional[dict]]]] = None
@@ -265,15 +256,15 @@ class MQTTSubscriber:
     async def _handle_uplink(self, payload: bytes):
         """Process a sensor uplink message from the ESP32.
 
-        ⚠️  DESIGN RULE: The ESP32's pompa1/pompa2 values are the SOURCE OF TRUTH.
-        We persist them AS-IS. The backend does NOT override hardware states.
-        evaluate_thresholds() is used ONLY for detecting threshold violations
-        for notification purposes — it does NOT mutate the persisted data.
+        UNIFIED INGESTION:
+          ALL telemetry (ESP32 or simulator) is treated as Source of Truth.
+          Pump states are persisted EXACTLY as reported — the backend NEVER
+          computes or overrides them.
 
         1. Parse JSON payload
-        2. Persist the ESP32's REAL pump states to sensor_logs
+        2. Persist the reported pump states AS-IS to sensor_logs
         3. Check thresholds for notification purposes only (read-only)
-        4. Aggregate energy/water deltas (batched every 60s)
+        4. Aggregate water level deltas (batched every 60s)
         5. Broadcast via WebSocket
         """
         try:
@@ -288,50 +279,52 @@ class MQTTSubscriber:
 
         # ----- 1. Fetch device config for threshold evaluation (READ-ONLY) -----
         config = await self._get_device_config(device_id)
+        auto_rules = get_automation_rules(config) if config else {}
+        auto_enabled = auto_rules.get("auto_enabled", True)
+        is_night = await self._is_night_mode_active(device_id)
 
-        # ----- 2. Persist the ESP32's ACTUAL pump states (NEVER override) -----
-        # The ESP32 is the source of truth for hardware state.
-        # We store what the hardware reports, not what the backend computes.
-        actual_pompa1 = reading.pompa1
-        actual_pompa2 = reading.pompa2
-
+        # ----- 2. Persist reported pump states AS-IS (UNIFIED SOURCE OF TRUTH) -----
         sensor_record = SensorRecord(
             device_id=device_id,
             recorded_at=now,
             jarak_cm=reading.jarak_cm,
             tds_value=reading.tds_value,
             current_ph=reading.current_ph,
-            pompa1=actual_pompa1,
-            pompa2=actual_pompa2,
+            pompa1=reading.pompa1,
+            pompa2=reading.pompa2,
         )
         if self.save_sensor:
             await self.save_sensor(sensor_record.model_dump())
 
+        logger.debug(
+            f"MQTT: device={device_id} jarak={reading.jarak_cm} tds={reading.tds_value} "
+            f"→ p1={reading.pompa1} p2={reading.pompa2} (persisted AS-IS)"
+        )
+
         # ----- 3. Check thresholds for NOTIFICATIONS ONLY (read-only) -----
-        # Compare what the ESP32 reports against what thresholds dictate.
-        # If there's a mismatch, the user should be notified — but we do
-        # NOT change the database record.
-        is_night = await self._is_night_mode_active(device_id)
         if not is_night and config:
             desired_p1, desired_p2 = evaluate_thresholds(
                 reading.jarak_cm,
                 reading.tds_value,
                 config,
-                actual_pompa1,
-                actual_pompa2,
+                reading.pompa1,
+                reading.pompa2,
+                current_ph=reading.current_ph,
             )
-            # Detect pump state transitions from ESP32's reported values
+            # Detect pump state transitions
             await self._create_auto_notification(
-                device_id, actual_pompa1, actual_pompa2, desired_p1, desired_p2, now
+                device_id, reading.pompa1, reading.pompa2,
+                desired_p1, desired_p2, now
             )
-            # Detect threshold violations (jarak/tds approaching limits)
+            # Detect threshold violations
             await self._create_threshold_warnings(
-                device_id, reading.jarak_cm, reading.tds_value, config, now
+                device_id, reading.jarak_cm, reading.tds_value, config, now,
+                current_ph=reading.current_ph,
             )
 
-        # ----- 4. Aggregate energy & water deltas (batched every 60s) -----
+        # ----- 4. Aggregate water level deltas (batched every 60s) -----
         await self._process_deltas_aggregated(
-            device_id, reading.jarak_cm, actual_pompa1, actual_pompa2, now
+            device_id, reading.jarak_cm, now
         )
 
         # ----- 5. Broadcast via WebSocket -----
@@ -343,15 +336,16 @@ class MQTTSubscriber:
                 "jarak_cm": reading.jarak_cm,
                 "tds_value": reading.tds_value,
                 "current_ph": reading.current_ph,
-                "pompa1": actual_pompa1,
-                "pompa2": actual_pompa2,
+                "pompa1": reading.pompa1,
+                "pompa2": reading.pompa2,
                 "water_level_pct": self.water_calc.jarak_to_water_level_pct(reading.jarak_cm),
                 "night_mode": is_night,
+                "auto_enabled": auto_enabled,
                 "recorded_at": now.isoformat(),
             }
             await self.on_sensor_reading(broadcast_data)
 
-    # ── State helpers ──────────────────────────────────────────────────────
+    # ── Notification helpers ──────────────────────────────────────────────
 
     def _get_state(self, device_id: str) -> dict:
         if device_id not in self._state:
@@ -365,21 +359,28 @@ class MQTTSubscriber:
             }
         return self._state[device_id]
 
+    def reset_state(self, device_id: str):
+        """Reset automation hysteresis & notification state for a device.
+
+        Called when device thresholds are updated so the notification engine
+        re-evaluates with fresh state instead of continuing from previous
+        hysteresis values.
+        """
+        if device_id in self._state:
+            del self._state[device_id]
+            logger.info(f"Reset automation state for device {device_id}")
+
     async def _create_auto_notification(
         self, device_id: str, actual_p1: int, actual_p2: int,
         desired_p1: int, desired_p2: int, now: datetime
     ):
-        """Create auto_mode notification when pump states change.
-
-        NOW tracks ACTUAL hardware states (from ESP32), not backend-computed states.
-        Also detects if hardware state differs from threshold-desired state (alert).
-        """
+        """Create auto_mode notification when pump states change."""
         if not self.save_notification:
             return
 
         state = self._get_state(device_id)
 
-        # Detect pump state transitions from ESP32's reported values
+        # Detect pump state transitions
         p1_changed = state["prev_p1"] != -1 and state["prev_p1"] != actual_p1
         p2_changed = state["prev_p2"] != -1 and state["prev_p2"] != actual_p2
 
@@ -426,8 +427,9 @@ class MQTTSubscriber:
         state["last_auto_notif"] = now
 
     async def _create_threshold_warnings(
-        self, device_id: str, jarak_cm: int, tds_value: float,
-        config: dict, now: datetime
+        self, device_id: str, jarak_cm: float, tds_value: float,
+        config: dict, now: datetime,
+        current_ph: float | None = None,
     ):
         """Create warning notifications when sensor values approach critical levels."""
         if not self.save_notification:
@@ -472,15 +474,28 @@ class MQTTSubscriber:
 
         state["last_warning"] = last_warn
 
+        # ── pH warning (pH > ph_max — pH DOWN needed) ──
+        ph_max = config.get("ph_max", 6.5)
+        if current_ph is not None and current_ph > 0 and current_ph > ph_max:
+            last = last_warn.get("ph_high", datetime.min.replace(tzinfo=UTC))
+            if (now - last).total_seconds() > cooldown:
+                await self.save_notification({
+                    "device_id": device_id,
+                    "type": "ph_warning",
+                    "title": "pH Too High — Dosing Needed",
+                    "message": f"pH {current_ph:.1f} exceeds threshold {ph_max:.1f} — Pompa 2 (pH DOWN) activated",
+                    "priority": "medium",
+                    "read": False,
+                    "created_at": now,
+                })
+                last_warn["ph_high"] = now
+
+        state["last_warning"] = last_warn
+
     # ── Alarm handler ──────────────────────────────────────────────────────
 
     async def _handle_alarm(self, payload: bytes):
-        """Process a water level alarm from the ESP32.
-
-        The ESP32 publishes to helioponic/alarm/uplink when it detects
-        a rising edge on jarak_cm == 999 (ultrasonic out of range).
-        The ESP32 has its own 60s cooldown, so we just persist + broadcast.
-        """
+        """Process a water level alarm from the ESP32."""
         try:
             data = json.loads(payload)
         except json.JSONDecodeError:
@@ -566,31 +581,26 @@ class MQTTSubscriber:
                 "ts": ts,
             })
 
-    # ── Energy/Water aggregation (batched every 60s) ───────────────────────
+    # ── Water level aggregation (batched every 60s) ───────────────────────
 
     def _get_agg_state(self, device_id: str) -> dict:
         if device_id not in self._agg_state:
             self._agg_state[device_id] = {
-                "p1_wh": 0.0, "p2_wh": 0.0,
                 "water_pct_sum": 0.0, "water_count": 0,
                 "last_jarak": 0, "last_flush": datetime.now(UTC),
             }
         return self._agg_state[device_id]
 
     async def _process_deltas_aggregated(
-        self, device_id: str, jarak_cm: int, pompa1: int, pompa2: int, now: datetime
+        self, device_id: str, jarak_cm: float, now: datetime
     ):
-        """Aggregate energy/water deltas and flush to DB every 60 seconds.
+        """Aggregate water level deltas and flush to DB every 60 seconds.
 
         Instead of writing every 1 second (86,400+ docs/day), we accumulate
         in memory and flush one aggregated record every AGGREGATION_INTERVAL_S.
         This reduces MongoDB writes by 60x.
         """
         agg = self._get_agg_state(device_id)
-
-        # Accumulate energy for this 1-second tick
-        agg["p1_wh"] += self.energy_calc.calculate_pompa1_wh(pompa1, 1.0)
-        agg["p2_wh"] += self.energy_calc.calculate_pompa2_wh(pompa2, 1.0)
 
         # Accumulate water level for averaging
         if jarak_cm != 999 and jarak_cm > 0:
@@ -602,16 +612,6 @@ class MQTTSubscriber:
         # Flush every AGGREGATION_INTERVAL_S
         elapsed = (now - agg["last_flush"]).total_seconds()
         if elapsed >= AGGREGATION_INTERVAL_S:
-            total = agg["p1_wh"] + agg["p2_wh"]
-
-            if self.save_energy:
-                await self.save_energy(EnergyRecord(
-                    device_id=device_id, recorded_at=now,
-                    pompa1_wh=round(agg["p1_wh"], 6),
-                    pompa2_wh=round(agg["p2_wh"], 6),
-                    total_wh=round(total, 6),
-                ).model_dump())
-
             if self.save_water and agg["water_count"] > 0:
                 avg_pct = agg["water_pct_sum"] / agg["water_count"]
                 await self.save_water(WaterRecord(
@@ -621,8 +621,6 @@ class MQTTSubscriber:
                 ).model_dump())
 
             # Reset accumulators
-            agg["p1_wh"] = 0.0
-            agg["p2_wh"] = 0.0
             agg["water_pct_sum"] = 0.0
             agg["water_count"] = 0
             agg["last_flush"] = now

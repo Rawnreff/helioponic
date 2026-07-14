@@ -14,7 +14,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import connect_db, close_db, ensure_indexes
-from app.services.energy import EnergyCalculator
 from app.services.water import WaterCalculator
 from app.mqtt.subscriber import MQTTSubscriber
 from app.routers.websocket import hub
@@ -54,12 +53,6 @@ async def _save_sensor(record: dict):
     await db.sensor_logs.insert_one(record)
 
 
-async def _save_energy(record: dict):
-    from app.core.database import get_database
-    db = await get_database()
-    await db.energy_records.insert_one(record)
-
-
 async def _save_water(record: dict):
     from app.core.database import get_database
     db = await get_database()
@@ -88,18 +81,15 @@ async def lifespan(app: FastAPI):
     await ensure_indexes()
 
     # Initialize services
-    energy_calc = EnergyCalculator()
     water_calc = WaterCalculator()
 
     # Initialize MQTT subscriber
     try:
         mqtt_subscriber = MQTTSubscriber(
-            energy_calc=energy_calc,
             water_calc=water_calc,
             on_sensor_reading=_broadcast_sensor_reading,
         )
         mqtt_subscriber.save_sensor = _save_sensor
-        mqtt_subscriber.save_energy = _save_energy
         mqtt_subscriber.save_water = _save_water
 
         # Wire notification persistence callback
@@ -153,6 +143,21 @@ async def lifespan(app: FastAPI):
 
     from app.routers import night_mode as night_mode_router
     night_mode_router.mqtt_publish_downlink = _publish_night_mode
+
+    # ── Hysteresis state reset on config change ────────────────────────────
+    # Wire callbacks so that when the mobile app updates thresholds via
+    # PUT /devices/config, the automation engine resets its hysteresis state
+    # and re-evaluates with fresh state.
+    async def _reset_notif_state(device_id: str):
+        from app.routers import analytics as analytics_router
+        analytics_router.reset_notif_state(device_id)
+
+    async def _reset_subscriber_state(device_id: str):
+        if mqtt_subscriber:
+            mqtt_subscriber.reset_state(device_id)
+
+    devices_router.reset_subscriber_state = _reset_subscriber_state
+    devices_router.reset_notif_state = _reset_notif_state
 
     logger.info(f"Server starting on port {settings.server_port}")
     yield

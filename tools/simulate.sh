@@ -9,10 +9,12 @@
 # mobile app secara real-time via WebSocket / REST API.
 #
 # Payload format menggunakan nama field firmware asli:
-#   jarak_cm, tds_value, current_ph, pompa1, pompa2
+#   jarak_cm, tds_value, current_ph
+#   ⚠️  Pompa1/pompa2 TIDAK dikirim — backend automation yg menentukan
 #
 # Fitur:
-#   - Pump state machine (pompa1, pompa2)
+#   - Hanya mengirim sensor readings (jarak, tds, ph)
+#   - Pump states ditentukan oleh backend automation & mobile app
 #   - Skenario alarm (pH out of range, water level rendah)
 #   - Random variasi data realistis
 #   - Auto-register test user + device (--register)
@@ -152,6 +154,46 @@ if [[ "$DO_REGISTER" == true ]]; then
   register_user_and_device
 fi
 
+# ---- Compute pump states (bang-bang hysteresis, matches backend) ----
+# Pompa 1 (Water Refill): ON when jarak > JARAK_ON, OFF when jarak < JARAK_OFF
+# Pompa 2 (pH DOWN):      ON when pH > PH_MAX, OFF when pH < PH_MIN
+JARAK_ON=5.0
+JARAK_OFF=2.0
+PH_MAX=6.5
+PH_MIN=5.5
+
+# ---- Fetch device config dari backend (sync dengan AutomationScreen) ----
+# Meng-override JARAK_ON/OFF dan PH_MIN/MAX dengan nilai dari backend.
+# Kalau backend unreachable, pakai hardcoded defaults di atas.
+fetch_device_config() {
+  local url="$API_BASE/devices/config?device_id=$DEVICE_ID"
+  local response
+  response=$(curl -s --connect-timeout 3 "$url" 2>/dev/null || echo "")
+
+  if [[ -n "$response" ]]; then
+    # Parse JSON key-value pairs, handling spaces after colon (e.g. "jarak_on": 2.0)
+    local fetched_jarak_on fetched_jarak_off fetched_ph_min fetched_ph_max
+    fetched_jarak_on=$(echo "$response" | sed -n 's/.*"jarak_on"[[:space:]]*:[[:space:]]*\([0-9.]*\).*/\1/p')
+    fetched_jarak_off=$(echo "$response" | sed -n 's/.*"jarak_off"[[:space:]]*:[[:space:]]*\([0-9.]*\).*/\1/p')
+    fetched_ph_min=$(echo "$response" | sed -n 's/.*"ph_min"[[:space:]]*:[[:space:]]*\([0-9.]*\).*/\1/p')
+    fetched_ph_max=$(echo "$response" | sed -n 's/.*"ph_max"[[:space:]]*:[[:space:]]*\([0-9.]*\).*/\1/p')
+
+    if [[ -n "$fetched_jarak_on" ]]; then JARAK_ON=$fetched_jarak_on; fi
+    if [[ -n "$fetched_jarak_off" ]]; then JARAK_OFF=$fetched_jarak_off; fi
+    if [[ -n "$fetched_ph_min" ]]; then PH_MIN=$fetched_ph_min; fi
+    if [[ -n "$fetched_ph_max" ]]; then PH_MAX=$fetched_ph_max; fi
+
+    echo -e "${GREEN}✓ Thresholds synced from backend:${NC}"
+    echo "  jarak_on=$JARAK_ON jarak_off=$JARAK_OFF ph_min=$PH_MIN ph_max=$PH_MAX"
+  else
+    echo -e "${YELLOW}⚠ Backend unreachable — using hardcoded defaults:${NC}"
+    echo "  jarak_on=$JARAK_ON jarak_off=$JARAK_OFF ph_min=$PH_MIN ph_max=$PH_MAX"
+  fi
+}
+
+# Panggil fetch config di startup
+fetch_device_config
+
 # ---- Verifikasi Prasyarat ----
 if ! command -v mosquitto_pub &>/dev/null; then
   echo -e "${RED}Error: mosquitto_pub tidak ditemukan.${NC}"
@@ -188,7 +230,9 @@ random_int() {
 }
 
 # ---- Build Payload (raw firmware field names) ----
-# Maps 1:1 to helioponic_esp32.ino publishSensorData()
+# Kirim SENSOR + PUMP states (unified format).
+# pompa1/pompa2 WAJIB dikirim (required int 0/1).
+# Backend memperlakukan SEMUA data sebagai Source of Truth — persist AS-IS.
 build_payload() {
   local ts=$1 jarak=$2 tds=$3 ph=$4 p1=$5 p2=$6
   cat <<EOF
@@ -204,10 +248,27 @@ build_payload() {
 EOF
 }
 
+compute_pumps() {
+  local jarak=$1 tds=$2 ph=$3
+  local p1=0 p2=0
+
+  # Pompa 1 — Water Level
+  if (( $(echo "$jarak > $JARAK_ON" | awk '{print ($1 > $2)}') )); then p1=1; fi
+  if (( $(echo "$jarak < $JARAK_OFF" | awk '{print ($1 < $2)}') )); then p1=0; fi
+
+  # Pompa 2 — pH DOWN
+  if (( $(echo "$ph > $PH_MAX" | awk '{print ($1 > $2)}') )); then p2=1; fi
+  if (( $(echo "$ph < $PH_MIN" | awk '{print ($1 < $2)}') )); then p2=0; fi
+
+  echo "$p1 $p2"
+}
+
 # ---- Persistent State ----
-prev_jarak=4    # Typical water level (~3cm air di tank 7cm)
+prev_jarak=2.5  # Typical water level (~4.5cm air di tank 7cm = ~64%)
 prev_tds=200.0
-prev_ph=6.5
+prev_ph=6.0  # Start below default ph_max (6.5) so pH crossing is visible quickly
+prev_p1=0
+prev_p2=0
 
 # ---- Counter & Timing ----
 count=0
@@ -234,23 +295,17 @@ while true; do
   ts=$(date +%s)
 
   # ── JARAK_CM (Ultrasonic distance) ──
-  # Tank depth: 7 cm. Range: 0-7 cm.
-  #   0 cm = water at sensor level (tank FULL)
-  #   7 cm = sensor reads bottom (tank EMPTY)
-  # Semakin kecil jarak = air lebih tinggi (tank lebih penuh)
   if [[ "$MODE" == "filling" ]]; then
-    # PDAM filling: jarak mengecil (air naik, tank terisi)
-    jarak=$(awk -v prev="$prev_jarak" 'BEGIN{srand(); printf "%.0f", prev - (rand()*1.2+0.3)}')
+    jarak=$(awk -v prev="$prev_jarak" 'BEGIN{srand(); printf "%.1f", prev - (rand()*1.2+0.3)}')
   else
-    # Normal: random walk, typical 2-6 cm (air di tengah tank)
-    jarak=$(awk -v prev="$prev_jarak" 'BEGIN{srand(); printf "%.0f", prev + (rand()-0.5)*1.5}')
+    jarak=$(awk -v prev="$prev_jarak" 'BEGIN{srand(); printf "%.1f", prev + (rand()-0.5)*1.5}')
   fi
-  if [[ "$jarak" -lt 0 ]]; then jarak=0; fi
-  if [[ "$jarak" -gt 7 ]]; then jarak=7; fi
+  if (( $(echo "$jarak < 0" | awk '{print ($1 < 0)}') )); then jarak=0.0; fi
+  if (( $(echo "$jarak > 4" | awk '{print ($1 > 4)}') )); then jarak=4.0; fi
+  jarak=$(printf "%.1f" "$jarak")
   prev_jarak=$jarak
 
   # ── TDS_VALUE (TDS in ppm) ──
-  # Normal range: 100-400 ppm. Alarm: < 50 atau > 800
   tds_target=$([[ "$MODE" == "alarm" ]] && echo "850" || echo "$(random_int 150 350)")
   tds=$(awk -v prev="$prev_tds" -v target="$tds_target" 'BEGIN{srand(); printf "%.0f", prev + (target-prev)*0.2}')
   if [[ "$tds" -lt 0 ]]; then tds=0; fi
@@ -258,44 +313,33 @@ while true; do
   prev_tds=$tds
 
   # ── CURRENT_PH (pH value) ──
-  # Normal range: 5.5-7.5. Alarm: < 5.0
   ph_target=$([[ "$MODE" == "alarm" ]] && echo "4.5" || echo "$(random_float 5.5 7.0)")
   ph=$(awk -v prev="$prev_ph" -v target="$ph_target" 'BEGIN{srand(); printf "%.1f", prev + (target-prev)*0.15}')
   if (( $(echo "$ph < 0" | awk '{print ($1 < 0)}') )); then ph=0; fi
   if (( $(echo "$ph > 14" | awk '{print ($1 > 14)}') )); then ph=14; fi
   prev_ph=$ph
 
-  # ── POMPA STATES ──
-  # Independent automation logic (refactored per PRD):
-  # Pompa 1 (Water Circulation): controlled by jarak_cm (tank depth 7cm)
-  #   → ON when jarak > 5 (water low — jarak_on=5)
-  #   → OFF when jarak < 2 (water sufficient — jarak_off=2)
-  # Pompa 2 (TDS Dosing): controlled by tds_value only
-  # CORRECTED LOGIC: TDS LOW → nutrients depleted → dosing ON
-  # - ON when tds < 95 (tds_on — LOW threshold)
-  # - OFF when tds > 105 (tds_off — HIGH threshold)
-  #
-  # Using native awk for float comparisons
-  p1=0; p2=0
-  # Pompa 1 — Water level control (thresholds: on>5, off<2 for 7cm tank)
-  if (( $(echo "$jarak > 5" | awk '{print ($1 > 5)}') )); then
-    p1=1
-  elif (( $(echo "$jarak < 2" | awk '{print ($1 < 2)}') )); then
-    p1=0
+  # ── POMPA STATES (computed via bang-bang hysteresis) ──
+  read p1 p2 <<< "$(compute_pumps "$jarak" "$tds" "$ph")"
+  # Apply hysteresis: don't change if in deadband
+  if [[ "$p1" != "$prev_p1" ]]; then
+    # Only change if hysteresis condition is met
+    if [[ "$p1" == "1" ]] && (( $(echo "$jarak > $JARAK_ON" | awk '{print ($1 > $2)}') )); then prev_p1=1; fi
+    if [[ "$p1" == "0" ]] && (( $(echo "$jarak < $JARAK_OFF" | awk '{print ($1 < $2)}') )); then prev_p1=0; fi
   fi
-  # Pompa 2 — TDS/Nutrient control (corrected: ON when LOW, OFF when HIGH)
-  if (( $(echo "$tds < 95" | awk '{print ($1 < 95)}') )); then
-    p2=1
-  elif (( $(echo "$tds > 105" | awk '{print ($1 > 105)}') )); then
-    p2=0
+  if [[ "$p2" != "$prev_p2" ]]; then
+    if [[ "$p2" == "1" ]] && (( $(echo "$ph > $PH_MAX" | awk '{print ($1 > $2)}') )); then prev_p2=1; fi
+    if [[ "$p2" == "0" ]] && (( $(echo "$ph < $PH_MIN" | awk '{print ($1 < $2)}') )); then prev_p2=0; fi
   fi
+  p1=$prev_p1
+  p2=$prev_p2
 
-  # Build & publish
+  # Build & publish — DENGAN pompa1/pompa2 (unified ingestion)
   build_payload "$ts" "$jarak" "$tds" "$ph" "$p1" "$p2" > /tmp/helioponic_payload_$$.json
 
   if mosquitto_pub -h "$BROKER" -p "$PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -t "$TOPIC" -f /tmp/helioponic_payload_$$.json; then
     count=$((count + 1))
-    echo -e "[${GREEN}✓${NC}] ${BLUE}$(date '+%H:%M:%S')${NC} jarak=${CYAN}${jarak}cm${NC} tds=${CYAN}${tds}ppm${NC} pH=${CYAN}${ph}${NC} p1=${p1} p2=${p2}"
+    echo -e "[${GREEN}✓${NC}] ${BLUE}$(date '+%H:%M:%S')${NC} jarak=${CYAN}${jarak}cm${NC} tds=${CYAN}${tds}ppm${NC} pH=${CYAN}${ph}${NC} P1=${YELLOW}$p1${NC} P2=${YELLOW}$p2${NC}"
 
     if [[ $MAX_COUNT -gt 0 && $count -ge $MAX_COUNT ]]; then
       cleanup
@@ -304,7 +348,7 @@ while true; do
     echo -e "[${RED}✗${NC}] ${BLUE}$(date '+%H:%M:%S')${NC} ${RED}Publish gagal!${NC} Cek koneksi ke broker $BROKER:$PORT"
   fi
 
-  # Juga kirim ke REST API sebagai fallback
+  # Juga kirim ke REST API sebagai fallback (with pompa fields)
   curl -s -X POST "$API_BASE/sensors/reading" \
     -H "Content-Type: application/json" \
     -d @/tmp/helioponic_payload_$$.json \

@@ -25,7 +25,7 @@ class WaterRecord(BaseModel):
     """
     device_id: str = "HELIO_001"
     recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    jarak_cm: int = 999
+    jarak_cm: float = 999.0
     water_level_pct: float = 0.0
 
     class Settings:

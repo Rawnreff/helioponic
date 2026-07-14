@@ -13,29 +13,32 @@ MQTT downlink topic: helioponic/config/downlink
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional
 from datetime import datetime
 
 
 class SensorReading(BaseModel):
     """MQTT uplink payload from ESP32 — published every 1 second.
 
+    ALL incoming telemetry (whether from ESP32 or simulator) is treated
+    as a strict, read-only Source of Truth. The backend persists pump
+    states exactly as reported and NEVER computes/overrides them.
+
     Maps 1:1 to the raw firmware's JSON output defined in helioponic_esp32.ino.
     """
     device_id: str = "HELIO_001"
     ts: int                     # Unix epoch timestamp (seconds)
-    jarak_cm: int = 999         # Ultrasonic distance (cm), 999 = out of range
+    jarak_cm: float = 999       # Ultrasonic distance (cm), 999 = out of range, supports decimals (e.g. 1.3cm)
     tds_value: float = 0.0      # TDS in ppm
     current_ph: float = 0.0     # pH value (0.0–14.0)
-    pompa1: int = Field(0, ge=0, le=1)  # Pump 1 relay state (circulation)
-    pompa2: int = Field(0, ge=0, le=1)  # Pump 2 relay state (pH dosing)
+    pompa1: int = Field(..., ge=0, le=1)  # Pump 1 (circulation) — REQUIRED: 0 or 1
+    pompa2: int = Field(..., ge=0, le=1)  # Pump 2 (pH dosing) — REQUIRED: 0 or 1
 
 
 class SensorRecord(BaseModel):
     """Persisted sensor reading document in the sensor_logs collection."""
     device_id: str
     recorded_at: datetime
-    jarak_cm: int
+    jarak_cm: float
     tds_value: float
     current_ph: float
     pompa1: int

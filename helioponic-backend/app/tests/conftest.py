@@ -70,8 +70,8 @@ async def create_test_device_config(db, device_id="HELIO_TEST", overrides: dict 
     """Insert a device config with default thresholds and automation rules."""
     config = {
         "device_id": device_id,
-        "jarak_on": 105,
-        "jarak_off": 95,
+        "jarak_on": 105.0,
+        "jarak_off": 95.0,
         "tds_on": 105.0,
         "tds_off": 95.0,
         "auto_enabled": True,
@@ -96,7 +96,7 @@ def make_sensor_payload(overrides: dict = None) -> dict:
     payload = {
         "device_id": "HELIO_TEST",
         "ts": 1760000000,
-        "jarak_cm": 15,
+        "jarak_cm": 15.0,
         "tds_value": 200.0,
         "current_ph": 6.5,
         "pompa1": 1,
