@@ -27,4 +27,4 @@ print("\n=== Latest 3 history records ===")
 res = api("GET", "/sensors/history?device_id=HELIO_001&limit=3", headers=headers)
 print(f"  Total records: {res.get('count', 0)}")
 for r in res.get("data", []):
-    print(f"  [{r.get('recorded_at', 'N/A')[:19]}] jarak={r.get('jarak_cm')}cm tds={r.get('tds_value')}ppm ph={r.get('current_ph')} p1={r.get('pompa1')} p2={r.get('pompa2')}")
+    print(f"  [{r.get('recorded_at', 'N/A')[:19]}] jarak={r.get('jarak_cm')}cm tds={r.get('tds_value')}ppm ph={r.get('current_ph')} p1={r.get('pompa1')} p2={r.get('pompa2')} p3={r.get('pompa3')} p4={r.get('pompa4')}")

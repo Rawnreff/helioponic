@@ -5,8 +5,10 @@ Field names match the raw firmware variables 1:1:
   - jarak_cm   → ultrasonic water distance (cm)
   - tds_value  → TDS reading (ppm)
   - current_ph → pH reading
-  - pompa1     → pump 1 relay state (0/1) — circulation
-  - pompa2     → pump 2 relay state (0/1) — pH dosing
+  - pompa1     → pump 1 relay state (0/1) — circulation/water refill
+  - pompa2     → pump 2 relay state (0/1) — pH DOWN dosing
+  - pompa3     → pump 3 relay state (0/1) — Nutrisi A dosing
+  - pompa4     → pump 4 relay state (0/1) — Nutrisi B dosing
 
 MQTT uplink topic:  helioponic/sensor/uplink
 MQTT downlink topic: helioponic/config/downlink
@@ -30,8 +32,10 @@ class SensorReading(BaseModel):
     jarak_cm: float = 999       # Ultrasonic distance (cm), 999 = out of range, supports decimals (e.g. 1.3cm)
     tds_value: float = 0.0      # TDS in ppm
     current_ph: float = 0.0     # pH value (0.0–14.0)
-    pompa1: int = Field(..., ge=0, le=1)  # Pump 1 (circulation) — REQUIRED: 0 or 1
-    pompa2: int = Field(..., ge=0, le=1)  # Pump 2 (pH dosing) — REQUIRED: 0 or 1
+    pompa1: int = Field(..., ge=0, le=1)  # Pump 1 (water circulation/refill) — REQUIRED: 0 or 1
+    pompa2: int = Field(..., ge=0, le=1)  # Pump 2 (pH DOWN dosing) — REQUIRED: 0 or 1
+    pompa3: int = Field(..., ge=0, le=1)  # Pump 3 (Nutrisi A dosing) — REQUIRED: 0 or 1
+    pompa4: int = Field(..., ge=0, le=1)  # Pump 4 (Nutrisi B dosing) — REQUIRED: 0 or 1
 
 
 class SensorRecord(BaseModel):
@@ -43,6 +47,8 @@ class SensorRecord(BaseModel):
     current_ph: float
     pompa1: int
     pompa2: int
+    pompa3: int
+    pompa4: int
 
     class Settings:
         name = "sensor_logs"

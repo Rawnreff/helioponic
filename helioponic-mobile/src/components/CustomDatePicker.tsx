@@ -6,9 +6,19 @@ import {Colors} from '../context/ThemeContext';
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-interface Props {visible: boolean; value: Date; onSelect: (date: Date) => void; onCancel: () => void; maximumDate?: Date}
+interface Props {
+  visible: boolean;
+  value: Date;
+  onSelect: (date: Date) => void;
+  onCancel: () => void;
+  maximumDate?: Date;
+  /** Array of date strings 'YYYY-MM-DD' that have data in the DB.
+   *  If provided, only these dates will be selectable.
+   *  If omitted, all dates up to maximumDate are enabled. */
+  enabledDates?: string[];
+}
 
-export default function CustomDatePicker({visible, value, onSelect, onCancel, maximumDate}: Props) {
+export default function CustomDatePicker({visible, value, onSelect, onCancel, maximumDate, enabledDates}: Props) {
   const [viewYear, setViewYear] = useState(value.getFullYear());
   const [viewMonth, setViewMonth] = useState(value.getMonth());
   const today = new Date();
@@ -16,9 +26,23 @@ export default function CustomDatePicker({visible, value, onSelect, onCancel, ma
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
   const firstDayOfWeek = new Date(viewYear, viewMonth, 1).getDay();
 
+  // Convert enabledDates (YYYY-MM-DD) to a Set for fast lookup
+  const enabledSet = enabledDates ? new Set(enabledDates) : null;
+
   const prevMonth = () => {if (viewMonth === 0) {setViewMonth(11); setViewYear(y => y - 1);} else setViewMonth(m => m - 1);};
   const nextMonth = () => {if (viewMonth === 11) {setViewMonth(0); setViewYear(y => y + 1);} else setViewMonth(m => m + 1);};
-  const isDisabled = (day: number) => {const d = new Date(viewYear, viewMonth, day); d.setHours(23, 59, 59, 999); return d > maxDate;};
+
+  const isDisabled = (day: number) => {
+    const d = new Date(viewYear, viewMonth, day);
+    d.setHours(23, 59, 59, 999);
+    if (d > maxDate) return true;
+    if (enabledSet) {
+      const dateKey = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      return !enabledSet.has(dateKey);
+    }
+    return false;
+  };
+
   const isSelected = (day: number) => value.getDate() === day && value.getMonth() === viewMonth && value.getFullYear() === viewYear;
   const canGoNext = viewYear < maxDate.getFullYear() || (viewYear === maxDate.getFullYear() && viewMonth < maxDate.getMonth());
   const handleSelect = (day: number) => onSelect(new Date(viewYear, viewMonth, day));

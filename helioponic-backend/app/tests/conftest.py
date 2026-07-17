@@ -72,8 +72,8 @@ async def create_test_device_config(db, device_id="HELIO_TEST", overrides: dict 
         "device_id": device_id,
         "jarak_on": 105.0,
         "jarak_off": 95.0,
-        "tds_on": 105.0,
-        "tds_off": 95.0,
+        "tds_on": 95.0,
+        "tds_off": 105.0,
         "auto_enabled": True,
         "rule_ph": True,
         "rule_tds": True,
@@ -101,6 +101,8 @@ def make_sensor_payload(overrides: dict = None) -> dict:
         "current_ph": 6.5,
         "pompa1": 1,
         "pompa2": 0,
+        "pompa3": 0,
+        "pompa4": 0,
     }
     if overrides:
         payload.update(overrides)

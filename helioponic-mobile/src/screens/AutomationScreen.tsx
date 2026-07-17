@@ -343,7 +343,7 @@ export default function AutomationScreen() {
     </SafeAreaView>
   );
 
-  const t = draft ?? serverThresholds ?? {jarak_on: 5, jarak_off: 2, tds_on: 105.0, tds_off: 95.0, ph_min: 5.5, ph_max: 6.5};
+  const t = draft ?? serverThresholds ?? {jarak_on: 5, jarak_off: 2, tds_on: 95.0, tds_off: 105.0, ph_min: 5.5, ph_max: 6.5};
 
   // ── Water level pct helpers ───────────────────────────────────────────
   const waterPct = (cm: number) => ((7 - Math.min(cm, 7)) / 7) * 100;
@@ -456,7 +456,7 @@ export default function AutomationScreen() {
           title="pH Level (DOWN)"
           subtitle="pH DOWN threshold for Pompa 2"
           icon="flask"
-          gradient={[Colors.tempBlue, '#42A5F5'] as const}
+          gradient={[Colors.tempBlue, '#4DB6AC'] as const}
           accentColor={Colors.tempBlue}
           bgColor={Colors.tempLight}
           ruleEnabled={rules.ph}
@@ -510,8 +510,8 @@ export default function AutomationScreen() {
            TDS CARD — toggle + tds sliders + confirm
            ════════════════════════════════════════════════════════════ */}
         <AutomationParamCard
-          title="TDS (Nutrients)"
-          subtitle="Total dissolved solids thresholds"
+          title="Nutrient AB Mix Control"
+          subtitle="TDS thresholds for combined AB Mix dosing (Pompa 3 & 4)"
           icon="flask"
           gradient={[Colors.energyOrange, '#FFA726'] as const}
           accentColor={Colors.energyOrange}
@@ -528,7 +528,7 @@ export default function AutomationScreen() {
               <ParamSlider
                 icon="arrow-down-circle"
                 title="TDS ON (Dosing)"
-                subtitle={`TDS < ${t.tds_on.toFixed(0)} ppm — nutrients low, activate Pompa 2`}
+                subtitle={`TDS < ${t.tds_on.toFixed(0)} ppm — nutrients low, activate AB Mix`}
                 color={!autoEnabled ? Colors.textHint : (rules.tds ? Colors.energyOrange : Colors.textHint)}
                 bg={!autoEnabled ? Colors.cardBorder : (rules.tds ? '#FFF3E0' : Colors.cardBorder)}
                 value={t.tds_on}
@@ -542,7 +542,7 @@ export default function AutomationScreen() {
               <ParamSlider
                 icon="arrow-up-circle"
                 title="TDS OFF (Stop)"
-                subtitle={`TDS > ${t.tds_off.toFixed(0)} ppm — nutrients sufficient, stop Pompa 2`}
+                subtitle={`TDS > ${t.tds_off.toFixed(0)} ppm — nutrients sufficient, stop AB Mix`}
                 color={!autoEnabled ? Colors.textHint : (rules.tds ? Colors.energyOrange : Colors.textHint)}
                 bg={!autoEnabled ? Colors.cardBorder : (rules.tds ? '#FFF3E0' : Colors.cardBorder)}
                 value={t.tds_off}
@@ -556,7 +556,7 @@ export default function AutomationScreen() {
               <View style={styles.previewRow}>
                 <Ionicons name="information-circle" size={12} color={!autoEnabled ? Colors.textHint : Colors.energyOrange} />
                 <Text style={styles.previewText}>
-                  Nutrients dosing activates below {t.tds_on.toFixed(0)} ppm and stops above {t.tds_off.toFixed(0)} ppm
+                  {'When TDS < ' + t.tds_on.toFixed(0) + ' ppm, Nutrient AB Mix (Pompa 3 & 4) turns ON simultaneously for tandem dosing. Both stop when TDS > ' + t.tds_off.toFixed(0) + ' ppm.'}
                 </Text>
               </View>
             </>

@@ -1,13 +1,16 @@
 """
 Analytics & data router — sensor, water, actuator endpoints.
 
-All endpoints use the raw firmware field names (jarak_cm, tds_value, current_ph, pompa1, pompa2).
+All endpoints use the raw firmware field names (jarak_cm, tds_value, current_ph, pompa1, pompa2, pompa3, pompa4).
 """
 
 import logging
-from datetime import datetime, timedelta, UTC
-from typing import Optional
+import csv
+import io
+from datetime import datetime, timedelta, timezone, UTC
+from typing import Optional, AsyncGenerator
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from bson.objectid import ObjectId
 
@@ -38,6 +41,54 @@ async def health():
 
 # ─── Sensors ────────────────────────────────────────────────────────────
 
+@router.get("/sensors/available-dates")
+async def get_available_dates(
+    device_id: str = Query("HELIO_001"),
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+):
+    """Return distinct dates (YYYY-MM-DD) that have sensor data for a device.
+
+    Used by the mobile app's date picker to only enable dates with data.
+    Performs a simple aggregation on recorded_at field.
+    """
+    await verify_device_access(db, device_id, user_id)
+
+    pipeline = [
+        {"$match": {"device_id": device_id}},
+        {"$group": {
+            "_id": {
+                "$dateToString": {"format": "%Y-%m-%d", "date": "$recorded_at"}
+            },
+        }},
+        {"$sort": {"_id": 1}},
+    ]
+
+    try:
+        cursor = db.sensor_logs.aggregate(pipeline)
+        dates = [doc["_id"] async for doc in cursor]
+    except Exception:
+        # Fallback: if $dateToString doesn't work (older MongoDB), use projection
+        dates = []
+        cursor = db.sensor_logs.find(
+            {"device_id": device_id},
+            {"recorded_at": 1},
+        ).sort("recorded_at", 1)
+        seen: set[str] = set()
+        async for doc in cursor:
+            if doc.get("recorded_at"):
+                d = doc["recorded_at"]
+                if hasattr(d, "strftime"):
+                    date_str = d.strftime("%Y-%m-%d")
+                else:
+                    date_str = str(d)[:10]
+                if date_str not in seen:
+                    seen.add(date_str)
+                    dates.append(date_str)
+
+    return {"dates": dates, "count": len(dates)}
+
+
 @router.get("/sensors/latest")
 async def get_latest_sensor(
     device_id: str = Query("HELIO_001"),
@@ -61,7 +112,7 @@ async def get_sensor_history(
     from_date: str = Query(default=None),
     to_date: str = Query(default=None),
     device_id: str = Query("HELIO_001"),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(100, ge=1, le=25000),
     user_id: str = Depends(get_current_user_id),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ):
@@ -137,7 +188,7 @@ async def get_water_history(
 
 class ActuatorRequest(BaseModel):
     """JSON body for pump control — matches ESP32 actuator downlink handler."""
-    pump: str = Field(..., pattern="^(pompa1|pompa2|circ|ph_d)$")
+    pump: str = Field(..., pattern="^(pompa1|pompa2|pompa3|pompa4|circ|ph_d|nut_a|nut_b)$")
     state: int = Field(..., ge=0, le=1)
     device_id: str = "HELIO_001"
 
@@ -168,6 +219,10 @@ async def control_pump(
         pump_field = "pompa1"
     elif pump in ("pompa2", "ph_d"):
         pump_field = "pompa2"
+    elif pump in ("pompa3", "nut_a"):
+        pump_field = "pompa3"
+    elif pump in ("pompa4", "nut_b"):
+        pump_field = "pompa4"
     else:
         raise HTTPException(status_code=400, detail=f"Unknown pump: {pump}")
 
@@ -184,6 +239,8 @@ async def control_pump(
         "current_ph": latest.get("current_ph", 0) if latest else 0,
         "pompa1": latest.get("pompa1", 0) if latest else 0,
         "pompa2": latest.get("pompa2", 0) if latest else 0,
+        "pompa3": latest.get("pompa3", 0) if latest else 0,
+        "pompa4": latest.get("pompa4", 0) if latest else 0,
     }
 
     record[pump_field] = state
@@ -219,6 +276,8 @@ async def control_pump(
             "current_ph": record.get("current_ph", 0),
             "pompa1": record.get("pompa1", 0),
             "pompa2": record.get("pompa2", 0),
+            "pompa3": record.get("pompa3", 0),
+            "pompa4": record.get("pompa4", 0),
             "night_mode": is_night,
             "auto_enabled": auto_enabled,
             "recorded_at": now.isoformat(),
@@ -230,6 +289,9 @@ async def control_pump(
 
 
 # ─── POST /sensors/reading (public, for IoT simulation) ─────────────────
+# NOTE: Ingestion throttle (2-min) is ONLY applied in the MQTT subscriber
+# because MQTT receives data every 1-5 seconds. The REST endpoint is called
+# by ESP32 every 5 minutes or by seed scripts — naturally throttled by sender.
 
 @router.post("/sensors/reading")
 async def post_sensor_reading(
@@ -238,7 +300,7 @@ async def post_sensor_reading(
 ):
     """Accept a sensor reading (from simulator or ESP32) via REST.
 
-    Applies threshold automation and persists to sensor_logs.
+    Persists every reading AS-IS. Ingestion throttle is ONLY in MQTT subscriber.
     Also creates auto_mode notifications on pump state changes.
     """
     device_id = reading.device_id or "HELIO_001"
@@ -266,40 +328,29 @@ async def post_sensor_reading(
     auto_enabled = auto_rules.get("auto_enabled", True)
 
     # Persist sensor record AS-IS (source of truth)
+    # Include the original sensor timestamp (ts) alongside server recorded_at
     record = {
         "device_id": device_id,
+        "ts": reading.ts,
         "recorded_at": now,
         "jarak_cm": reading.jarak_cm,
         "tds_value": reading.tds_value,
         "current_ph": reading.current_ph,
         "pompa1": reading.pompa1,
         "pompa2": reading.pompa2,
+        "pompa3": reading.pompa3,
+        "pompa4": reading.pompa4,
     }
     await db.sensor_logs.insert_one(record)
 
     logger.debug(
         f"REST: device={device_id} jarak={reading.jarak_cm} tds={reading.tds_value} "
-        f"→ p1={reading.pompa1} p2={reading.pompa2} (persisted AS-IS)"
+        f"→ p1={reading.pompa1} p2={reading.pompa2} p3={reading.pompa3} p4={reading.pompa4} (persisted AS-IS)"
     )
 
-    # Threshold evaluation for NOTIFICATIONS ONLY (read-only, never mutates DB)
-    if not is_night and config_dict:
-            desired_p1, desired_p2 = evaluate_thresholds(
-                reading.jarak_cm,
-                reading.tds_value,
-                config_dict,
-                reading.pompa1,
-                reading.pompa2,
-                current_ph=reading.current_ph,
-            )
-            await _create_rest_notification(
-                db, device_id, reading.pompa1, reading.pompa2,
-                desired_p1, desired_p2, now
-            )
-            await _create_rest_threshold_warnings(
-                db, device_id, reading.jarak_cm, reading.tds_value, config_dict, now,
-                current_ph=reading.current_ph,
-            )
+    # NOTIFICATIONS are created ONLY by the MQTT subscriber (primary ingestion path).
+    # The REST endpoint is a fallback for data persistence only — skipping notification
+    # creation here prevents DUPLICATE notifications (same reading processed twice).
 
     # Broadcast to WebSocket clients
     if websocket_broadcast:
@@ -314,6 +365,8 @@ async def post_sensor_reading(
             "current_ph": reading.current_ph,
             "pompa1": reading.pompa1,
             "pompa2": reading.pompa2,
+            "pompa3": reading.pompa3,
+            "pompa4": reading.pompa4,
             "water_level_pct": water_calc.jarak_to_water_level_pct(reading.jarak_cm),
             "night_mode": is_night,
             "auto_enabled": auto_enabled,
@@ -325,8 +378,130 @@ async def post_sensor_reading(
     return {
         "status": "ok",
         "message": "sensor reading saved",
-        "pumps_reported": {"pompa1": reading.pompa1, "pompa2": reading.pompa2},
+        "pumps_reported": {
+            "pompa1": reading.pompa1,
+            "pompa2": reading.pompa2,
+            "pompa3": reading.pompa3,
+            "pompa4": reading.pompa4,
+        },
     }
+
+
+# ─── CSV Export (simple, all raw data) ───────────────────────────────
+
+CSV_HEADERS = [
+    "Timestamp", "pH", "TDS (ppm)", "Water Distance (cm)",
+    "Water Level (%)", "Pompa1", "Pompa2", "Pompa3", "Pompa4",
+]
+
+
+@router.get("/sensors/export")
+async def export_sensor_csv(
+    range: str = Query("daily", pattern="^(daily|weekly|monthly)$"),
+    device_id: str = Query("HELIO_001"),
+    from_date: str = Query(default=None),
+    to_date: str = Query(default=None),
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+):
+    """Export ALL raw sensor data as CSV for a given time range.
+
+    - If `from_date` and `to_date` are provided, exports data in that range.
+    - Otherwise uses `range` parameter:
+      - `daily`   → entire current calendar day (00:00 – 23:59)
+      - `weekly`  → last 7 full days
+      - `monthly` → last 30 full days
+
+    No downsampling — every stored record is included.
+    """
+    await verify_device_access(db, device_id, user_id)
+
+    now = datetime.now(UTC)
+
+    # Compute time range with proper day boundaries
+    if from_date and to_date:
+        # from_date and to_date are full ISO strings from the frontend
+        from_dt = datetime.fromisoformat(from_date)
+        to_dt = datetime.fromisoformat(to_date)
+    else:
+        # Use start-of-day boundaries for predictable results
+        start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        if range == "daily":
+            from_dt = start_of_today
+            to_dt = start_of_today + timedelta(days=1) - timedelta(microseconds=1)
+        elif range == "weekly":
+            from_dt = start_of_today - timedelta(days=7)
+            to_dt = start_of_today + timedelta(days=1) - timedelta(microseconds=1)
+        else:
+            from_dt = start_of_today - timedelta(days=30)
+            to_dt = start_of_today + timedelta(days=1) - timedelta(microseconds=1)
+
+    # Simple raw-data cursor — no aggregation, no downsampling
+    cursor = db.sensor_logs.find(
+        {
+            "device_id": device_id,
+            "recorded_at": {"$gte": from_dt, "$lte": to_dt},
+        },
+        {
+            "recorded_at": 1,
+            "current_ph": 1,
+            "tds_value": 1,
+            "jarak_cm": 1,
+            "pompa1": 1, "pompa2": 1, "pompa3": 1, "pompa4": 1,
+        },
+    ).sort("recorded_at", 1)
+
+    # ── Async generator: yields CSV row strings ────────────────────
+    async def csv_stream() -> AsyncGenerator[str, None]:
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(CSV_HEADERS)
+        yield buf.getvalue()
+        buf.seek(0)
+        buf.truncate()
+
+        WATER_TANK_CM = 7.0
+
+        async for doc in cursor:
+            ts = doc.get("recorded_at")
+            ts_str = ts.strftime("%b %d, %I:%M:%S %p") if ts else ""
+
+            ph = doc.get("current_ph", 0) or 0
+            tds = doc.get("tds_value", 0) or 0
+            jarak = doc.get("jarak_cm", 0) or 0
+
+            # Compute water level pct (7cm tank)
+            if jarak >= 999 or jarak < 0:
+                water_pct = 0
+            else:
+                water_depth = WATER_TANK_CM - min(jarak, WATER_TANK_CM)
+                water_pct = round(max(0, min(100, (water_depth / WATER_TANK_CM) * 100)))
+
+            p1 = int(doc.get("pompa1", 0) or 0)
+            p2 = int(doc.get("pompa2", 0) or 0)
+            p3 = int(doc.get("pompa3", 0) or 0)
+            p4 = int(doc.get("pompa4", 0) or 0)
+
+            writer.writerow([
+                ts_str,
+                f"{ph:.1f}",
+                f"{tds:.0f}",
+                f"{jarak:.1f}",
+                str(water_pct),
+                str(p1), str(p2), str(p3), str(p4),
+            ])
+            yield buf.getvalue()
+            buf.seek(0)
+            buf.truncate()
+
+    filename = f"helioponic_{range}_{now.strftime('%Y-%m-%d')}.csv"
+    return StreamingResponse(
+        csv_stream(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
 
 
 # ─── Notifications ─────────────────────────────────────────────────────
@@ -420,183 +595,72 @@ def _format_notification(n: dict) -> dict:
         "message": n.get("message", ""),
         "priority": n.get("priority", "medium"),
         "read": n.get("read", False),
-        "read_at": n.get("read_at").isoformat() if n.get("read_at") else None,
-        "timestamp": n.get("created_at").isoformat() if n.get("created_at") else None,
-        "created_at": n.get("created_at").isoformat() if n.get("created_at") else None,
+        "read_at": _fmt_iso(n.get("read_at")),
+        "timestamp": _fmt_iso(n.get("created_at")),
+        "created_at": _fmt_iso(n.get("created_at")),
         "device_id": n.get("device_id", ""),
     }
 
 
 # ─── REST Notification Helper ───────────────────────────────────────────
 
-# Track previous pump states for REST path notification (per device)
-_rest_notif_state: dict[str, dict] = {}  # device_id -> {p1, p2, last_notif}
+# NOTE: Notification creation has been REMOVED from the REST path.
+# The MQTT subscriber is the primary notification engine — it processes
+# every incoming sensor reading and creates notifications with proper
+# dedup and cooldowns. The REST path only persists data and broadcasts
+# via WebSocket.
+#
+# If MQTT is unavailable (fallback scenario), notifications are not created.
+# This is acceptable because the REST endpoint is only used by the simulator
+# as a secondary fallback — real ESP32 devices use MQTT exclusively.
+
+# Keep reset_notif_state for devices.py compatibility (called on threshold update)
+_rest_notif_state: dict[str, dict] = {}  # device_id -> {p1, p2, p3, p4, last_notif}
 
 
 def reset_notif_state(device_id: str):
     """Reset the REST notification state for a device.
 
-    Called when device thresholds are updated so the notification engine
-    starts fresh without stale pump state tracking.
+    Kept for devices.py backward compatibility — notifications are now
+    created exclusively by the MQTT subscriber.
     """
     if device_id in _rest_notif_state:
         del _rest_notif_state[device_id]
         logger.info(f"Reset REST notification state for device {device_id}")
 
 
-async def _create_rest_notification(
-    db: AsyncIOMotorDatabase,
-    device_id: str,
-    actual_p1: int,
-    actual_p2: int,
-    desired_p1: int,
-    desired_p2: int,
-    now: datetime,
-):
-    """Create auto_mode notification via REST path (fallback when MQTT is down).
-
-    Tracks ACTUAL hardware pump states (from ESP32), not backend-computed states.
-    Also detects if hardware state differs from threshold-desired state (alert).
-    Uses cooldown-based dedup (5 seconds) to prevent spam.
-    """
-    prev = _rest_notif_state.get(device_id)
-    if prev is None:
-        # First reading for this device — initialize and skip
-        _rest_notif_state[device_id] = {"p1": actual_p1, "p2": actual_p2, "last": now}
-        return
-
-    p1_changed = prev["p1"] != actual_p1
-    p2_changed = prev["p2"] != actual_p2
-
-    # Update state
-    prev["p1"] = actual_p1
-    prev["p2"] = actual_p2
-
-    if not p1_changed and not p2_changed:
-        return
-
-    # Cooldown check (5 seconds)
-    elapsed = (now - prev["last"]).total_seconds()
-    if elapsed < 5.0:
-        return
-
-    prev["last"] = now
-
-    # Build notification with actual hardware states
-    p1_label = "ON" if actual_p1 else "OFF"
-    p2_label = "ON" if actual_p2 else "OFF"
-
-    if p1_changed and p2_changed:
-        title = "Both Pumps Changed State"
-        message = f"Pompa 1 → {p1_label}, Pompa 2 → {p2_label}"
-    elif p1_changed:
-        title = "Pompa 1 Changed State"
-        message = f"Pompa 1 (Water Refill) → {p1_label}"
-    else:
-        title = "Pompa 2 Changed State"
-        message = f"Pompa 2 (TDS Dosing) → {p2_label}"
-
-    # If hardware state differs from threshold-desired, note it
-    if actual_p1 != desired_p1:
-        message += f" (threshold expects {'ON' if desired_p1 else 'OFF'})"
-    if actual_p2 != desired_p2:
-        message += f" (threshold expects {'ON' if desired_p2 else 'OFF'})"
-
-    notification = {
-        "device_id": device_id,
-        "type": "auto_mode",
-        "title": title,
-        "message": message,
-        "priority": "medium",
-        "read": False,
-        "created_at": now,
-    }
-    await db.notifications.insert_one(notification)
-
-
-# Track threshold warning state for REST path (per device)
-_rest_warning_state: dict[str, dict] = {}
-
-
-async def _create_rest_threshold_warnings(
-    db: AsyncIOMotorDatabase,
-    device_id: str,
-    jarak_cm: float,
-    tds_value: float,
-    config: dict,
-    now: datetime,
-    current_ph: float | None = None,
-):
-    """Create warning notifications when sensor values approach critical levels (REST path)."""
-    if device_id not in _rest_warning_state:
-        _rest_warning_state[device_id] = {"last_warn": {}, "cooldown": 60.0}
-
-    state = _rest_warning_state[device_id]
-    last_warn = state["last_warn"]
-    cooldown = state["cooldown"]
-
-    jarak_on = config.get("jarak_on", 105)
-
-    # Water level approaching critical (within 10% of trigger)
-    if jarak_cm != 999 and jarak_cm > 0 and jarak_cm > jarak_on * 0.9:
-        last = last_warn.get("water", datetime.min.replace(tzinfo=UTC))
-        if (now - last).total_seconds() > cooldown:
-            await db.notifications.insert_one({
-                "device_id": device_id,
-                "type": "tds_warning",
-                "title": "Water Level Approaching Critical",
-                "message": f"Water distance: {jarak_cm}cm (trigger: {jarak_on}cm)",
-                "priority": "medium",
-                "read": False,
-                "created_at": now,
-            })
-            last_warn["water"] = now
-
-    # Water out of range (jarak_cm == 999 means sensor failure)
-    if jarak_cm == 999:
-        last = last_warn.get("water_alarm", datetime.min.replace(tzinfo=UTC))
-        if (now - last).total_seconds() > 60.0:
-            await db.notifications.insert_one({
-                "device_id": device_id,
-                "type": "water_alarm",
-                "title": "Water Level Sensor Out of Range",
-                "message": "Ultrasonic sensor reading 999cm — check water level immediately",
-                "priority": "high",
-                "read": False,
-                "created_at": now,
-            })
-            last_warn["water_alarm"] = now
-
-    # ── pH warning (pH > ph_max — pH DOWN needed) ──
-    ph_max = config.get("ph_max", 6.5)
-    if current_ph is not None and current_ph > 0 and current_ph > ph_max:
-        last = last_warn.get("ph_high", datetime.min.replace(tzinfo=UTC))
-        if (now - last).total_seconds() > cooldown:
-            await db.notifications.insert_one({
-                "device_id": device_id,
-                "type": "ph_warning",
-                "title": "pH Too High — Dosing Needed",
-                "message": f"pH {current_ph:.1f} exceeds threshold {ph_max:.1f} — Pompa 2 (pH DOWN) activated",
-                "priority": "medium",
-                "read": False,
-                "created_at": now,
-            })
-            last_warn["ph_high"] = now
-
-
 # ─── Helpers ────────────────────────────────────────────────────────────
+
+def _fmt_iso(dt: datetime | None) -> str | None:
+    """Format a datetime to ISO string, always including timezone (Z for UTC).
+
+    MongoDB's Motor driver may return naive datetime objects even though
+    they represent UTC. Without timezone info, JavaScript's new Date()
+    misinterprets the string as LOCAL time instead of UTC, causing
+    timestamp shifts by the user's timezone offset (e.g. +7 hours for WIB).
+    This helper ensures the output always has timezone info.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
 
 def _format_sensor_record(record: dict) -> dict:
     """Format a MongoDB sensor_logs document for API response."""
     return {
         "id": str(record["_id"]),
         "device_id": record.get("device_id", ""),
-        "recorded_at": record.get("recorded_at").isoformat() if record.get("recorded_at") else None,
+        "ts": record.get("ts", 0),
+        "recorded_at": _fmt_iso(record.get("recorded_at")),
         "jarak_cm": record.get("jarak_cm", 999),
         "tds_value": record.get("tds_value", 0),
         "current_ph": record.get("current_ph", 0),
         "pompa1": record.get("pompa1", 0),
         "pompa2": record.get("pompa2", 0),
+        "pompa3": record.get("pompa3", 0),
+        "pompa4": record.get("pompa4", 0),
     }
 
 
@@ -609,7 +673,7 @@ def _format_water_record(record: dict) -> dict:
     return {
         "id": str(record["_id"]),
         "device_id": validated.device_id,
-        "recorded_at": validated.recorded_at.isoformat() if validated.recorded_at else None,
+        "recorded_at": _fmt_iso(validated.recorded_at),
         "jarak_cm": validated.jarak_cm,
         "water_level_pct": validated.water_level_pct,
     }

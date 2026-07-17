@@ -112,7 +112,7 @@ try:
     res, code = api("GET", f"/sensors/latest?device_id=HELIO_001", headers=headers)
     if code == 200 and "jarak_cm" in res:
         ok(f"Data EXISTS for HELIO_001: jarak={res.get('jarak_cm')}cm, tds={res.get('tds_value')}ppm, ph={res.get('current_ph')}")
-        print(f"       pompa1={res.get('pompa1')}, pompa2={res.get('pompa2')}")
+        print(f"       pompa1={res.get('pompa1')}, pompa2={res.get('pompa2')}, pompa3={res.get('pompa3')}, pompa4={res.get('pompa4')}")
         print(f"       recorded_at={res.get('recorded_at', 'N/A')[:19]}")
     elif code == 403:
         info(f"Access denied — HELIO_001 belongs to a different user (or none)")

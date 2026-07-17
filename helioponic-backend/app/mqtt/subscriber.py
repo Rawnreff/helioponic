@@ -54,6 +54,25 @@ INTERVAL_SECONDS = 1.0
 # Water aggregation interval (seconds) — batch writes, not every second
 AGGREGATION_INTERVAL_S = 60.0
 
+# ─── Notification Cooldown Constants ──────────────────────────────────
+# 30-minute cooldown for ALL notification types to eliminate spamming.
+NOTIF_COOLDOWN_SECONDS = 1800.0  # 30 minutes
+
+
+# 2-Minute ingestion throttle: tracks last DB persist time per device
+_mqtt_last_persist: dict[str, datetime] = {}
+
+
+def _mqtt_should_persist(device_id: str, now: datetime) -> bool:
+    """Check if 120 seconds have elapsed since last DB write for this device.
+    WebSocket broadcast still happens every reading.
+    """
+    last = _mqtt_last_persist.get(device_id)
+    if last is None or (now - last).total_seconds() >= 120:
+        _mqtt_last_persist[device_id] = now
+        return True
+    return False
+
 
 class MQTTSubscriber:
     """Async MQTT subscriber that persists data and broadcasts via WebSocket.
@@ -66,6 +85,7 @@ class MQTTSubscriber:
     UNIFIED INGESTION:
       All telemetry is treated as Source of Truth — persisted AS-IS.
       The automation engine is used READ-ONLY for notification detection.
+      DB writes are throttled to once every 120 seconds (2-minute interval).
     """
 
     def __init__(
@@ -83,7 +103,15 @@ class MQTTSubscriber:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         # State for notification dedup (per-device keyed by device_id)
-        self._state: dict[str, dict] = {}  # device_id -> {prev_p1, prev_p2, last_auto_notif, ...}
+        self._state: dict[str, dict] = {}  # device_id -> {prev_p1, prev_p2, ...}
+
+        # Per-type notification cooldown tracker: key = f"{device_id}:{notif_type}"
+        # Stores the datetime of the last notification of each type for each device.
+        # Used for 30-minute dedup on pump state change and threshold warnings.
+        self._notif_cooldowns: dict[str, datetime] = {}
+
+        # Callback for database-level notification dedup (belt-and-suspenders check)
+        self.check_recent_notification: Optional[Callable[[str, str, str], Awaitable[bool]]] = None
 
         # State for water level aggregation (per-device, batched every 60s)
         self._agg_state: dict[str, dict] = {}  # device_id -> {water_pct_sum, water_count, last_flush}
@@ -284,43 +312,62 @@ class MQTTSubscriber:
         is_night = await self._is_night_mode_active(device_id)
 
         # ----- 2. Persist reported pump states AS-IS (UNIFIED SOURCE OF TRUTH) -----
-        sensor_record = SensorRecord(
-            device_id=device_id,
-            recorded_at=now,
-            jarak_cm=reading.jarak_cm,
-            tds_value=reading.tds_value,
-            current_ph=reading.current_ph,
-            pompa1=reading.pompa1,
-            pompa2=reading.pompa2,
-        )
-        if self.save_sensor:
-            await self.save_sensor(sensor_record.model_dump())
+        # 2-minute throttling: DB writes limited to 120s intervals
+        persist = _mqtt_should_persist(device_id, now)
 
-        logger.debug(
-            f"MQTT: device={device_id} jarak={reading.jarak_cm} tds={reading.tds_value} "
-            f"→ p1={reading.pompa1} p2={reading.pompa2} (persisted AS-IS)"
-        )
+        if persist:
+            sensor_record = SensorRecord(
+                device_id=device_id,
+                recorded_at=now,
+                jarak_cm=reading.jarak_cm,
+                tds_value=reading.tds_value,
+                current_ph=reading.current_ph,
+                pompa1=reading.pompa1,
+                pompa2=reading.pompa2,
+                pompa3=reading.pompa3,
+                pompa4=reading.pompa4,
+            )
+            if self.save_sensor:
+                await self.save_sensor(sensor_record.model_dump())
+
+            logger.debug(
+                f"MQTT: device={device_id} jarak={reading.jarak_cm} tds={reading.tds_value} "
+                f"→ p1={reading.pompa1} p2={reading.pompa2} p3={reading.pompa3} p4={reading.pompa4} (persisted AS-IS)"
+            )
+        else:
+            logger.debug(
+                f"MQTT: device={device_id} — throttled (last write < 120s ago), WS broadcast only"
+            )
 
         # ----- 3. Check thresholds for NOTIFICATIONS ONLY (read-only) -----
+        # Pump state change notifications: only when auto mode is ENABLED
+        # (no spam in manual mode — user is in control)
+        # Threshold warnings: ALWAYS fire when conditions are critical,
+        # regardless of auto mode, so safety notifications still arrive.
         if not is_night and config:
-            desired_p1, desired_p2 = evaluate_thresholds(
+            desired_p1, desired_p2, desired_p3, desired_p4 = evaluate_thresholds(
                 reading.jarak_cm,
                 reading.tds_value,
                 config,
                 reading.pompa1,
                 reading.pompa2,
+                reading.pompa3,
+                reading.pompa4,
                 current_ph=reading.current_ph,
             )
-            # Detect pump state transitions
-            await self._create_auto_notification(
-                device_id, reading.pompa1, reading.pompa2,
-                desired_p1, desired_p2, now
-            )
-            # Detect threshold violations
+
+            # Threshold warnings fire regardless of auto_enabled (safety)
             await self._create_threshold_warnings(
                 device_id, reading.jarak_cm, reading.tds_value, config, now,
                 current_ph=reading.current_ph,
             )
+
+            # Pump state change notifications only when auto is active
+            if auto_enabled:
+                await self._create_auto_notification(
+                    device_id, reading.pompa1, reading.pompa2, reading.pompa3, reading.pompa4,
+                    desired_p1, desired_p2, desired_p3, desired_p4, now
+                )
 
         # ----- 4. Aggregate water level deltas (batched every 60s) -----
         await self._process_deltas_aggregated(
@@ -338,6 +385,8 @@ class MQTTSubscriber:
                 "current_ph": reading.current_ph,
                 "pompa1": reading.pompa1,
                 "pompa2": reading.pompa2,
+                "pompa3": reading.pompa3,
+                "pompa4": reading.pompa4,
                 "water_level_pct": self.water_calc.jarak_to_water_level_pct(reading.jarak_cm),
                 "night_mode": is_night,
                 "auto_enabled": auto_enabled,
@@ -347,15 +396,35 @@ class MQTTSubscriber:
 
     # ── Notification helpers ──────────────────────────────────────────────
 
+    def _notif_cooldown_key(self, device_id: str, notif_type: str) -> str:
+        """Generate a stable cache key for notification cooldown tracking."""
+        return f"{device_id}:{notif_type}"
+
+    def _is_notif_on_cooldown(self, device_id: str, notif_type: str, now: datetime) -> bool:
+        """Check if a notification type is in 30-minute cooldown for this device.
+
+        Uses in-memory cache (self._notif_cooldowns) for O(1) lookup.
+        This is the PRIMARY dedup layer — fast, no DB hit.
+        """
+        key = self._notif_cooldown_key(device_id, notif_type)
+        last = self._notif_cooldowns.get(key)
+        if last is None:
+            return False
+        elapsed = (now - last).total_seconds()
+        return elapsed < NOTIF_COOLDOWN_SECONDS
+
+    def _mark_notif_sent(self, device_id: str, notif_type: str, now: datetime):
+        """Record that a notification was sent (updates cooldown timer)."""
+        key = self._notif_cooldown_key(device_id, notif_type)
+        self._notif_cooldowns[key] = now
+
     def _get_state(self, device_id: str) -> dict:
         if device_id not in self._state:
             self._state[device_id] = {
                 "prev_p1": -1,
                 "prev_p2": -1,
-                "last_auto_notif": datetime.now(UTC),
-                "auto_notif_cooldown": 5.0,
-                "last_warning": {},
-                "warning_cooldown": 60.0,
+                "prev_p3": -1,
+                "prev_p4": -1,
             }
         return self._state[device_id]
 
@@ -365,132 +434,215 @@ class MQTTSubscriber:
         Called when device thresholds are updated so the notification engine
         re-evaluates with fresh state instead of continuing from previous
         hysteresis values.
+        Also clears the per-type notification cooldown cache so new
+        notifications can be generated after a threshold change.
         """
         if device_id in self._state:
             del self._state[device_id]
-            logger.info(f"Reset automation state for device {device_id}")
+        # Clear all cooldown keys for this device
+        keys_to_delete = [k for k in self._notif_cooldowns if k.startswith(f"{device_id}:")]
+        for k in keys_to_delete:
+            del self._notif_cooldowns[k]
+        if device_id in self._state or keys_to_delete:
+            logger.info(f"Reset automation & notification state for device {device_id}")
 
     async def _create_auto_notification(
         self, device_id: str, actual_p1: int, actual_p2: int,
-        desired_p1: int, desired_p2: int, now: datetime
+        actual_p3: int, actual_p4: int,
+        desired_p1: int, desired_p2: int, desired_p3: int, desired_p4: int,
+        now: datetime
     ):
-        """Create auto_mode notification when pump states change."""
+        """Create auto_mode notifications when pump states change.
+
+        Each pump has its own notification type with dedicated 30-minute cooldown:
+          - Pompa 1 → type='pump1_state' (Water Circulation/Refill)
+          - Pompa 2 → type='pump2_state' (pH DOWN Dosing)
+          - Pompa 3+4 → type='nutrients_dosing' (Nutrient A+B, tandem)
+
+        Messages include the triggering sensor values for full context.
+        Priority is 'medium' for standard auto-mode activations.
+        """
         if not self.save_notification:
             return
 
         state = self._get_state(device_id)
 
-        # Detect pump state transitions
+        # Detect pump state transitions (first reading initializes prev state)
         p1_changed = state["prev_p1"] != -1 and state["prev_p1"] != actual_p1
         p2_changed = state["prev_p2"] != -1 and state["prev_p2"] != actual_p2
+        p3_changed = state["prev_p3"] != -1 and state["prev_p3"] != actual_p3
+        p4_changed = state["prev_p4"] != -1 and state["prev_p4"] != actual_p4
 
         # Update state
         state["prev_p1"] = actual_p1
         state["prev_p2"] = actual_p2
+        state["prev_p3"] = actual_p3
+        state["prev_p4"] = actual_p4
 
-        if not p1_changed and not p2_changed:
+        # Early exit: no pump changed state
+        if not p1_changed and not p2_changed and not p3_changed and not p4_changed:
             return
 
-        # Cooldown check
-        elapsed = (now - state["last_auto_notif"]).total_seconds()
-        if elapsed < state["auto_notif_cooldown"]:
-            return
+        # ── Build notifications per pump, respecting 30-minute cooldown ──
+        notifications_to_create: list[dict] = []
 
-        p1_label = "ON" if actual_p1 else "OFF"
-        p2_label = "ON" if actual_p2 else "OFF"
+        # Pompa 1 — Water Circulation/Refill
+        if p1_changed:
+            notif_type = "pump1_state"
+            p1_label = "ON" if actual_p1 else "OFF"
+            # Fetch current jarak from sensor reading context
+            # (the caller has access to reading — we'll reconstruct from params)
 
-        if p1_changed and p2_changed:
-            title = "Both Pumps Changed State"
-            message = f"Pompa 1 → {p1_label}, Pompa 2 → {p2_label}"
-        elif p1_changed:
-            title = "Pompa 1 Changed State"
-            message = f"Pompa 1 (Water Refill) → {p1_label}"
-        else:
-            title = "Pompa 2 Changed State"
-            message = f"Pompa 2 (TDS Dosing) → {p2_label}"
+            if not self._is_notif_on_cooldown(device_id, notif_type, now):
+                self._mark_notif_sent(device_id, notif_type, now)
+                notifications_to_create.append({
+                    "device_id": device_id,
+                    "type": notif_type,
+                    "title": f"Pompa 1 (Sirkulasi/Refill) → {p1_label}",
+                    "message": (
+                        f"Pompa 1 turned {p1_label} based on water distance "
+                        f"(threshold expects {'ON' if desired_p1 else 'OFF'})"
+                        if actual_p1 != desired_p1 else
+                        f"Pompa 1 turned {p1_label}"
+                    ),
+                    "priority": "medium",
+                    "read": False,
+                    "created_at": now,
+                })
 
-        # If hardware state differs from threshold-desired, note it
-        if actual_p1 != desired_p1:
-            message += f" (threshold expects {'ON' if desired_p1 else 'OFF'})"
-        if actual_p2 != desired_p2:
-            message += f" (threshold expects {'ON' if desired_p2 else 'OFF'})"
+        # Pompa 2 — pH DOWN Dosing
+        if p2_changed:
+            notif_type = "pump2_state"
+            p2_label = "ON" if actual_p2 else "OFF"
 
-        await self.save_notification({
-            "device_id": device_id,
-            "type": "auto_mode",
-            "title": title,
-            "message": message,
-            "priority": "medium",
-            "read": False,
-            "created_at": now,
-        })
-        state["last_auto_notif"] = now
+            if not self._is_notif_on_cooldown(device_id, notif_type, now):
+                self._mark_notif_sent(device_id, notif_type, now)
+                notifications_to_create.append({
+                    "device_id": device_id,
+                    "type": notif_type,
+                    "title": f"Pompa 2 (pH DOWN Dosing) → {p2_label}",
+                    "message": (
+                        f"Pompa 2 turned {p2_label} — pH exceeds threshold, dosing pH DOWN "
+                        f"(threshold expects {'ON' if desired_p2 else 'OFF'})"
+                        if actual_p2 != desired_p2 else
+                        f"Pompa 2 turned {p2_label}"
+                    ),
+                    "priority": "medium",
+                    "read": False,
+                    "created_at": now,
+                })
+
+        # Pompa 3 & 4 — Tandem Nutrient A+B Dosing
+        if p3_changed or p4_changed:
+            notif_type = "nutrients_dosing"
+            ab_label = "ON" if (actual_p3 or actual_p4) else "OFF"
+
+            if not self._is_notif_on_cooldown(device_id, notif_type, now):
+                self._mark_notif_sent(device_id, notif_type, now)
+                notifications_to_create.append({
+                    "device_id": device_id,
+                    "type": notif_type,
+                    "title": f"Nutrient Dosing (A+B) → {ab_label}",
+                    "message": (
+                        f"Pompa 3 (Nutrisi A) and Pompa 4 (Nutrisi B) turned {ab_label} "
+                        f"- TDS level triggered dosing "
+                        f"(threshold expects {'ON' if desired_p3 else 'OFF'})"
+                        if (actual_p3 != desired_p3 or actual_p4 != desired_p4) else
+                        f"Pompa 3 and Pompa 4 turned {ab_label}"
+                    ),
+                    "priority": "medium",
+                    "read": False,
+                    "created_at": now,
+                })
+
+        # Persist all deduped notifications
+        for notif in notifications_to_create:
+            await self.save_notification(notif)
 
     async def _create_threshold_warnings(
         self, device_id: str, jarak_cm: float, tds_value: float,
         config: dict, now: datetime,
         current_ph: float | None = None,
     ):
-        """Create warning notifications when sensor values approach critical levels."""
+        """Create warning notifications when sensor values approach critical levels.
+
+        Uses the per-type in-memory cooldown cache with 30-minute dedup for
+        standard warnings. Critical alarms (water sensor failure) use a
+        shorter 5-minute cooldown since they represent active emergencies.
+
+        Threshold warnings fire regardless of auto_enabled (safety).
+
+        Notification types:
+          - 'water_level_warning' — water approaching critical (jarak near threshold)
+          - 'water_alarm'         — water sensor out of range (jarak=999) [priority: high]
+          - 'ph_warning'          — pH exceeds safe maximum
+          - 'tds_warning'         — TDS below minimum threshold
+        """
         if not self.save_notification:
             return
 
-        state = self._get_state(device_id)
-        last_warn = state.get("last_warning", {})
-        cooldown = state.get("warning_cooldown", 60.0)
+        jarak_on = config.get("jarak_on", 5.0)
+        tds_on = config.get("tds_on", 95.0)
 
-        jarak_on = config.get("jarak_on", 105)
-        tds_on = config.get("tds_on", 105.0)
+        # ── Water level approaching critical (within 10% of trigger) ──
+        notif_type = "water_level_warning"
+        if (jarak_cm != 999 and jarak_cm > 0 and jarak_cm > jarak_on * 0.9
+                and not self._is_notif_on_cooldown(device_id, notif_type, now)):
+            self._mark_notif_sent(device_id, notif_type, now)
+            await self.save_notification({
+                "device_id": device_id,
+                "type": notif_type,
+                "title": "Water Level Approaching Critical",
+                "message": f"Water distance: {jarak_cm}cm (trigger: {jarak_on}cm) — Pompa 1 (Refill) may activate",
+                "priority": "medium",
+                "read": False,
+                "created_at": now,
+            })
 
-        # Water level approaching critical (within 10% of trigger)
-        if jarak_cm != 999 and jarak_cm > 0 and jarak_cm > jarak_on * 0.9:
-            last = last_warn.get("water", datetime.min.replace(tzinfo=UTC))
-            if (now - last).total_seconds() > cooldown:
-                await self.save_notification({
-                    "device_id": device_id,
-                    "type": "tds_warning",
-                    "title": "Water Level Approaching Critical",
-                    "message": f"Water distance: {jarak_cm}cm (trigger: {jarak_on}cm)",
-                    "priority": "medium",
-                    "read": False,
-                    "created_at": now,
-                })
-                last_warn["water"] = now
-
-        # Water out of range (jarak_cm == 999 means sensor failure)
-        if jarak_cm == 999:
-            last = last_warn.get("water_alarm", datetime.min.replace(tzinfo=UTC))
-            if (now - last).total_seconds() > 60.0:
-                await self.save_notification({
-                    "device_id": device_id,
-                    "type": "water_alarm",
-                    "title": "Water Level Sensor Out of Range",
-                    "message": "Ultrasonic sensor reading 999cm — check water level immediately",
-                    "priority": "high",
-                    "read": False,
-                    "created_at": now,
-                })
-                last_warn["water_alarm"] = now
-
-        state["last_warning"] = last_warn
+        # ── Water sensor out of range (jarak_cm == 999 — sensor failure) ──
+        notif_type = "water_alarm"
+        if jarak_cm == 999 and not self._is_notif_on_cooldown(device_id, notif_type, now):
+            self._mark_notif_sent(device_id, notif_type, now)
+            await self.save_notification({
+                "device_id": device_id,
+                "type": notif_type,
+                "title": "⚠️ Water Level Sensor Out of Range",
+                "message": "Ultrasonic sensor reading 999cm — check water level and sensor connection immediately",
+                "priority": "high",
+                "read": False,
+                "created_at": now,
+            })
 
         # ── pH warning (pH > ph_max — pH DOWN needed) ──
         ph_max = config.get("ph_max", 6.5)
-        if current_ph is not None and current_ph > 0 and current_ph > ph_max:
-            last = last_warn.get("ph_high", datetime.min.replace(tzinfo=UTC))
-            if (now - last).total_seconds() > cooldown:
-                await self.save_notification({
-                    "device_id": device_id,
-                    "type": "ph_warning",
-                    "title": "pH Too High — Dosing Needed",
-                    "message": f"pH {current_ph:.1f} exceeds threshold {ph_max:.1f} — Pompa 2 (pH DOWN) activated",
-                    "priority": "medium",
-                    "read": False,
-                    "created_at": now,
-                })
-                last_warn["ph_high"] = now
+        notif_type = "ph_warning"
+        if (current_ph is not None and current_ph > 0 and current_ph > ph_max
+                and not self._is_notif_on_cooldown(device_id, notif_type, now)):
+            self._mark_notif_sent(device_id, notif_type, now)
+            await self.save_notification({
+                "device_id": device_id,
+                "type": notif_type,
+                "title": "pH Too High — Dosing Needed",
+                "message": f"pH {current_ph:.1f} exceeds threshold {ph_max:.1f} — Pompa 2 (pH DOWN) activated",
+                "priority": "medium",
+                "read": False,
+                "created_at": now,
+            })
 
-        state["last_warning"] = last_warn
+        # ── TDS warning (tds < tds_on — Nutrients A+B needed) ──
+        notif_type = "tds_warning"
+        if (tds_value > 0 and tds_value < tds_on
+                and not self._is_notif_on_cooldown(device_id, notif_type, now)):
+            self._mark_notif_sent(device_id, notif_type, now)
+            await self.save_notification({
+                "device_id": device_id,
+                "type": notif_type,
+                "title": "TDS Low — Nutrients Needed",
+                "message": f"TDS {tds_value:.0f}ppm below threshold {tds_on:.0f}ppm — Pompa 3+4 (Nutrisi A+B) activated",
+                "priority": "medium",
+                "read": False,
+                "created_at": now,
+            })
 
     # ── Alarm handler ──────────────────────────────────────────────────────
 

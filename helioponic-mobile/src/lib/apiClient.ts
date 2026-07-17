@@ -82,12 +82,40 @@ export const configApi = {
 };
 
 export const sensorsApi = {
+  availableDates: (deviceId?: string) =>
+    request<{dates: string[]; count: number}>('/sensors/available-dates', {params: {device_id: deviceId}}),
   latest: (deviceId?: string) =>
-    request<{id: string; device_id: string; recorded_at: string; jarak_cm: number; tds_value: number; current_ph: number; pompa1: 0 | 1; pompa2: 0 | 1}>('/sensors/latest', {params: {device_id: deviceId}}),
+    request<{id: string; device_id: string; ts: number; recorded_at: string; jarak_cm: number; tds_value: number; current_ph: number; pompa1: 0 | 1; pompa2: 0 | 1; pompa3: 0 | 1; pompa4: 0 | 1}>('/sensors/latest', {params: {device_id: deviceId}}),
   history: (from: string, to: string, deviceId?: string, limit = 200) =>
     request<{data: any[]; count: number}>('/sensors/history', {params: {from_date: from, to_date: to, limit, device_id: deviceId}}),
-  postReading: (data: {device_id: string; ts: number; jarak_cm: number; tds_value: number; current_ph: number; pompa1?: 0 | 1; pompa2?: 0 | 1}) =>
-    request<{status: string; message: string; pumps_reported: {pompa1: number; pompa2: number}}>('/sensors/reading', {method: 'POST', body: data}),
+  postReading: (data: {device_id: string; ts: number; jarak_cm: number; tds_value: number; current_ph: number; pompa1?: 0 | 1; pompa2?: 0 | 1; pompa3?: 0 | 1; pompa4?: 0 | 1}) =>
+    request<{status: string; message: string; pumps_reported: {pompa1: number; pompa2: number; pompa3: number; pompa4: number}}>('/sensors/reading', {method: 'POST', body: data}),
+  /**
+   * Export sensor data as CSV using smart downsampled aggregation.
+   * Returns raw CSV text (not JSON).
+   */
+  exportCsv: async (
+    range: 'daily' | 'weekly' | 'monthly',
+    deviceId?: string,
+    fromDate?: string,
+    toDate?: string,
+  ): Promise<string> => {
+    const params = new URLSearchParams();
+    params.set('range', range);
+    if (deviceId) params.set('device_id', deviceId);
+    if (fromDate) params.set('from_date', fromDate);
+    if (toDate) params.set('to_date', toDate);
+    const url = `${API_URL}/sensors/export?${params.toString()}`;
+    const headers: Record<string, string> = {};
+    if (_token) headers['Authorization'] = `Bearer ${_token}`;
+    const response = await fetch(url, {headers});
+    if (!response.ok) {
+      let errMsg = `HTTP ${response.status}`;
+      try {const data = await response.json(); errMsg = data?.detail || errMsg;} catch {}
+      throw new ApiError(errMsg, response.status);
+    }
+    return response.text();
+  },
 };
 
 export const waterApi = {

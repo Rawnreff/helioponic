@@ -1,20 +1,20 @@
 import React, {useEffect, useState, useCallback, useMemo, useRef} from 'react';
-import {View, Text, ScrollView, StyleSheet, RefreshControl, TouchableOpacity, Animated, Alert} from 'react-native';
+import {View, Text, ScrollView, StyleSheet, RefreshControl, TouchableOpacity, Animated, Alert, Image} from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {LinearGradient} from 'expo-linear-gradient';
 import {Ionicons} from '@expo/vector-icons';
 import {useAuth} from '../context/AuthContext';
 import {useSensorStore} from '../store/sensorStore';
 import {SensorStatusCard} from '../components/SensorStatusCard';
-import {PumpToggle} from '../components/PumpToggle';
 import {WaterWaveWidget} from '../components/WaterWaveWidget';
 import {AnimatedProgressBar} from '../components/AnimatedProgressBar';
 import {SectionHeader} from '../components/SectionHeader';
-import {waterApi, actuatorApi, notificationsApi, automationApi} from '../lib/apiClient';
+import {waterApi, actuatorApi, notificationsApi, automationApi, sensorsApi} from '../lib/apiClient';
 import {Colors, Shadows} from '../context/ThemeContext';
 import {useNotificationStore} from '../store/notificationStore';
 import {useNightModeStore} from '../store/nightModeStore';
 import {nightModeApi} from '../lib/apiClient';
+import {DASHBOARD_POLL_MS, API_URL, CAMERA_POLL_MS} from '../constants';
 
 function formatRelativeTime(ts: number): string {
   const now = Date.now() / 1000;
@@ -43,9 +43,67 @@ function computeWaterPct(jarakCm: number): number {
 
 function getWaterStatus(pct: number): {label: string; color: string; icon: string} {
   if (pct >= 80) return {label: 'Optimal', color: Colors.accentGreen, icon: 'checkmark-circle'};
-  if (pct >= 40) return {label: 'Normal', color: Colors.tempBlue, icon: 'water'};
+  if (pct >= 40) return {label: 'Normal', color: Colors.waterTeal, icon: 'water'};
   if (pct >= 15) return {label: 'Low', color: Colors.solarAmber, icon: 'alert-circle'};
   return {label: 'Critical', color: Colors.statusRed, icon: 'warning'};
+}
+
+// ── Nutrient Health Assessment (hydroponics-accurate) ────────────
+
+/** Ideal pH range for most hydroponic crops */
+const PH_IDEAL_MIN = 5.5;
+const PH_IDEAL_MAX = 6.5;
+const PH_SAFE_MIN = 4.0;
+const PH_SAFE_MAX = 8.0;
+
+function getPhHealth(ph: number | undefined): {
+  label: string; color: string; barValue: number; barColor: string;
+} {
+  if (ph == null || ph <= 0 || ph > 14) {
+    return {label: '--', color: Colors.textHint, barValue: 0, barColor: '#E0E4E8'};
+  }
+  const barValue = Math.max(0, Math.min(100, (ph / 14) * 100));
+  if (ph >= PH_IDEAL_MIN && ph <= PH_IDEAL_MAX) {
+    return {label: 'Optimal', color: Colors.accentGreen, barValue, barColor: Colors.accentGreen};
+  }
+  if (ph >= PH_SAFE_MIN && ph <= PH_SAFE_MAX) {
+    return {label: 'Warning', color: Colors.solarAmber, barValue, barColor: Colors.solarAmber};
+  }
+  return {label: 'Critical', color: Colors.statusRed, barValue, barColor: Colors.statusRed};
+}
+
+function getTdsHealth(tds: number | undefined): {
+  label: string; color: string; barValue: number; barColor: string;
+} {
+  if (tds == null || tds <= 0) {
+    return {label: '--', color: Colors.textHint, barValue: 0, barColor: '#E0E4E8'};
+  }
+  // Scale TDS up to 500ppm for bar visualization
+  const maxTds = 500;
+  const barValue = Math.max(0, Math.min(100, (tds / maxTds) * 100));
+  if (tds > 100) {
+    return {label: 'Sufficient', color: Colors.accentGreen, barValue, barColor: Colors.accentGreen};
+  }
+  if (tds > 50) {
+    return {label: 'Low', color: Colors.solarAmber, barValue, barColor: Colors.solarAmber};
+  }
+  return {label: 'Critical', color: Colors.statusRed, barValue, barColor: Colors.statusRed};
+}
+
+type HealthLevel = 'Optimal' | 'Warning' | 'Critical';
+
+function assessNutrientHealth(ph: number | undefined, tds: number | undefined): {
+  level: HealthLevel; color: string; message: string;
+} {
+  const phOk = ph != null && ph > 0 && ph >= PH_IDEAL_MIN && ph <= PH_IDEAL_MAX;
+  const tdsOk = tds != null && tds > 100;
+  if (phOk && tdsOk) {
+    return {level: 'Optimal', color: Colors.accentGreen, message: 'All nutrients in optimal range'};
+  }
+  if (!phOk && !tdsOk) {
+    return {level: 'Critical', color: Colors.statusRed, message: 'pH & nutrients need immediate attention'};
+  }
+  return {level: 'Warning', color: Colors.solarAmber, message: 'Some parameters need adjustment'};
 }
 
 const WaterCard = React.memo(function WaterCard({reading}: {reading: any}) {
@@ -112,6 +170,46 @@ const WaterCard = React.memo(function WaterCard({reading}: {reading: any}) {
   );
 });
 
+// ── Dashboard compact pump card (dedicated for 2-column grid) ──
+const DashboardPumpCard = React.memo(function DashboardPumpCard({label, on, color, onToggle}: {
+  label: string;
+  on: boolean;
+  color: string;
+  onToggle: (v: boolean) => void;
+}) {
+  return (
+    <TouchableOpacity
+      style={[styles.dashPumpCard, on && {borderColor: color + '30'}]}
+      onPress={() => onToggle(!on)}
+      activeOpacity={0.75}
+    >
+      <LinearGradient
+        colors={on ? ([color, color + '80'] as const) : (['#D0D5DD', '#E0E4E8'] as const)}
+        start={{x: 0, y: 0}} end={{x: 1, y: 0}}
+        style={styles.dashPumpAccent}
+      />
+      <View style={[styles.dashPumpBody, {backgroundColor: on ? '#FFFFFF' : '#F8F9FA'}]}>
+        <Ionicons
+          name={on ? 'flash' : 'flash-outline'}
+          size={14}
+          color={on ? color : '#B0B8C5'}
+          style={{marginRight: 6}}
+        />
+        <Text style={[styles.dashPumpText, {color: on ? color : Colors.textPrimary}]} numberOfLines={1}>
+          {label}
+        </Text>
+        <View style={[styles.dashPumpBtn, {backgroundColor: on ? color : '#E8ECF1'}]}>
+          <Ionicons
+            name={on ? 'power' : 'power-outline'}
+            size={10}
+            color={on ? '#FFFFFF' : '#B0B8C5'}
+          />
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+});
+
 export default function DashboardScreen({navigation}: any) {
   const {state, activeDeviceId} = useAuth();
   const latestReading = useSensorStore((s) => s.latestReading);
@@ -121,6 +219,8 @@ export default function DashboardScreen({navigation}: any) {
   const setOverridePump = useSensorStore((s) => s.setOverridePump);
   const [refreshing, setRefreshing] = useState(false);
   const [controlExpanded, setControlExpanded] = useState(false);
+  const [cameraTick, setCameraTick] = useState(0);
+  const [cameraError, setCameraError] = useState(false);
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const unreadCount = useNotificationStore((s) => s.unreadCount);
   const setUnreadCount = useNotificationStore((s) => s.setUnreadCount);
@@ -130,6 +230,48 @@ export default function DashboardScreen({navigation}: any) {
   useEffect(() => {
     Animated.timing(fadeAnim, {toValue: 1, duration: 800, useNativeDriver: true}).start();
   }, []);
+
+  // Camera poll timer (AI Vision Feed)
+  useEffect(() => {
+    const timer = setInterval(() => {setCameraTick((t) => t + 1); setCameraError(false);}, CAMERA_POLL_MS);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Fetch latest sensor reading via REST (fallback if WebSocket delayed/disconnected)
+  useEffect(() => {
+    const fetchLatestReading = async () => {
+      try {
+        // Only fetch via REST if store has NO data OR WebSocket is disconnected
+        // (avoids overwriting real-time WebSocket updates)
+        const current = useSensorStore.getState().latestReading;
+        const connected = useSensorStore.getState().isConnected;
+        if (current && connected) return;
+
+        const res = await sensorsApi.latest(activeDeviceId);
+        if (res && 'jarak_cm' in res) {
+          useSensorStore.getState().setLatestReading({
+            device_id: res.device_id,
+            ts: res.recorded_at ? new Date(res.recorded_at).getTime() / 1000 : 0,
+            jarak_cm: res.jarak_cm,
+            tds_value: res.tds_value,
+            current_ph: res.current_ph,
+            pompa1: res.pompa1,
+            pompa2: res.pompa2,
+            pompa3: res.pompa3,
+            pompa4: res.pompa4,
+            auto_enabled: current?.auto_enabled ?? true,
+            night_mode: current?.night_mode ?? false,
+          });
+        }
+      } catch (err) {
+        // Silently fail — WebSocket will provide data when connected
+      }
+    };
+    // Fetch immediately on mount + poll periodically
+    fetchLatestReading();
+    const interval = setInterval(fetchLatestReading, DASHBOARD_POLL_MS);
+    return () => clearInterval(interval);
+  }, [activeDeviceId]);
 
   // Fetch notification unread count + night mode status periodically
   useEffect(() => {
@@ -168,6 +310,66 @@ export default function DashboardScreen({navigation}: any) {
       console.warn('[Dashboard] pump toggle failed:', (err as any)?.message || err);
       // Revert: toggle back
       setOverridePump(pump, s === 1 ? 0 : 1);
+    }
+  }, [activeDeviceId, setLatestReading, setOverridePump]);
+
+  const handleABMixToggle = useCallback(async (s: 0 | 1) => {
+    // Toggle BOTH Pompa 3 & Pompa 4 simultaneously (tandem AB mix)
+    const currentReading = useSensorStore.getState().latestReading;
+    if (currentReading?.auto_enabled === true) {
+      return new Promise<void>((resolve) => {
+        Alert.alert(
+          'Automation Active',
+          'Manual override will disable the Auto-Pump System. Pumps will no longer trigger automatically until you re-enable it from the Automation screen.',
+          [
+            {text: 'Cancel', style: 'cancel', onPress: () => resolve()},
+            {text: 'Override & Disable Auto', style: 'destructive', onPress: async () => {
+                try {
+                  await automationApi.update({
+                    device_id: activeDeviceId,
+                    auto_enabled: false,
+                    rule_ph: true, rule_tds: true, rule_water: true,
+                  });
+                  const storeReading = useSensorStore.getState().latestReading;
+                  if (storeReading) {
+                    useSensorStore.getState().setLatestReading({...storeReading, auto_enabled: false});
+                  }
+                } catch { /* silent */ }
+                // Toggle both pumps
+                setOverridePump('pompa3', s);
+                setOverridePump('pompa4', s);
+                try {
+                  await Promise.all([
+                    actuatorApi.controlPump('pompa3', s, activeDeviceId),
+                    actuatorApi.controlPump('pompa4', s, activeDeviceId),
+                  ]);
+                  const store = useSensorStore.getState().latestReading;
+                  if (store) setLatestReading({...store, pompa3: s, pompa4: s});
+                } catch (err) {
+                  console.warn('[Dashboard] AB mix toggle failed:', (err as any)?.message || err);
+                  setOverridePump('pompa3', s === 1 ? 0 : 1);
+                  setOverridePump('pompa4', s === 1 ? 0 : 1);
+                }
+                resolve();
+            }},
+          ],
+        );
+      });
+    } else {
+      setOverridePump('pompa3', s);
+      setOverridePump('pompa4', s);
+      try {
+        await Promise.all([
+          actuatorApi.controlPump('pompa3', s, activeDeviceId),
+          actuatorApi.controlPump('pompa4', s, activeDeviceId),
+        ]);
+        const current = useSensorStore.getState().latestReading;
+        if (current) setLatestReading({...current, pompa3: s, pompa4: s});
+      } catch (err) {
+        console.warn('[Dashboard] AB mix toggle failed:', (err as any)?.message || err);
+        setOverridePump('pompa3', s === 1 ? 0 : 1);
+        setOverridePump('pompa4', s === 1 ? 0 : 1);
+      }
     }
   }, [activeDeviceId, setLatestReading, setOverridePump]);
 
@@ -215,6 +417,8 @@ export default function DashboardScreen({navigation}: any) {
   const effectivePumps = {
     pompa1: overridePumps.pompa1 ?? reading?.pompa1 ?? 0,
     pompa2: overridePumps.pompa2 ?? reading?.pompa2 ?? 0,
+    pompa3: overridePumps.pompa3 ?? reading?.pompa3 ?? 0,
+    pompa4: overridePumps.pompa4 ?? reading?.pompa4 ?? 0,
   };
 
   const hour = useMemo(() => new Date().getHours(), []);
@@ -278,33 +482,103 @@ export default function DashboardScreen({navigation}: any) {
 
         <Animated.View style={[styles.mainStatusCard, {opacity: fadeAnim}]}>
           <View style={styles.mainStatusHeader}>
-            <View>
-              <Text style={styles.mainStatusLabel}>Nutrient Health</Text>
-              <Text style={styles.mainStatusValue}>{reading ? `${reading.current_ph?.toFixed(1) ?? '--'} pH / ${reading.tds_value?.toFixed(0) ?? '--'} ppm` : 'Waiting for data...'}</Text>
+            <View style={{flexDirection: 'row', alignItems: 'center', gap: 10}}>
+              <View style={[styles.nutrientIconWrap, {backgroundColor: Colors.primaryGreen + '15'}]}>
+                <Ionicons name="leaf" size={18} color={Colors.primaryGreen} />
+              </View>
+              <View>
+                <Text style={styles.mainStatusLabel}>Nutrient Health</Text>
+                {reading ? (() => {
+                  const health = assessNutrientHealth(reading.current_ph, reading.tds_value);
+                  return (
+                    <View style={[styles.nutrientBadge, {backgroundColor: health.color + '15'}]}>
+                      <View style={[styles.nutrientBadgeDot, {backgroundColor: health.color}]} />
+                      <Text style={[styles.nutrientBadgeText, {color: health.color}]}>{health.level}</Text>
+                    </View>
+                  );
+                })() : (
+                  <Text style={styles.mainStatusSub}>Waiting for sensor data...</Text>
+                )}
+              </View>
             </View>
             <View style={[styles.statusBadge, {backgroundColor: isConnected ? Colors.paleGreen : '#FFF3E0'}]}>
               <View style={[styles.statusBadgeDot, {backgroundColor: isConnected ? Colors.statusGreen : Colors.statusOrange}]} />
               <Text style={[styles.statusBadgeText, {color: isConnected ? Colors.deepGreen : '#BF360C'}]}>{isConnected ? 'Active' : 'Standby'}</Text>
             </View>
           </View>
+
           {reading && (
-            <View style={styles.progressContainer}>
-              <AnimatedProgressBar
-                value={Math.min(100, ((reading.current_ph ?? 7) / 14) * 100)}
-                height={8}
-                color={Colors.primaryGreen}
-                backgroundColor="#F1F3F5"
-                borderRadius={4}
-                style={{marginBottom: 8}}
-              />
-              <Text style={styles.progressText}>pH {reading.current_ph?.toFixed(1) ?? '--'} — Water
-                 {Math.round(computeWaterPct(reading.jarak_cm))}%</Text>
+            <View style={styles.nutrientParams}>
+              {/* ── pH Row ── */}
+              {(() => {
+                const ph = getPhHealth(reading.current_ph);
+                return (
+                  <View style={styles.nutrientRow}>
+                    <View style={styles.nutrientRowHeader}>
+                      <View style={{flexDirection: 'row', alignItems: 'center', gap: 6}}>
+                        <Ionicons name="flask" size={14} color={ph.color} />
+                        <Text style={styles.nutrientParamLabel}>pH</Text>
+                        <Text style={[styles.nutrientParamValue, {color: ph.color}]}>{reading.current_ph?.toFixed(1) ?? '--'}</Text>
+                      </View>
+                      <Text style={[styles.nutrientParamStatus, {color: ph.color}]}>{ph.label}</Text>
+                    </View>
+                    <AnimatedProgressBar
+                      value={ph.barValue}
+                      height={5}
+                      color={ph.barColor}
+                      backgroundColor="#F0F2F5"
+                      borderRadius={3}
+                    />
+                    <Text style={styles.nutrientRangeText}>Ideal: {PH_IDEAL_MIN} – {PH_IDEAL_MAX}</Text>
+                  </View>
+                );
+              })()}
+
+              {/* ── TDS Row ── */}
+              {(() => {
+                const tds = getTdsHealth(reading.tds_value);
+                return (
+                  <View style={styles.nutrientRow}>
+                    <View style={styles.nutrientRowHeader}>
+                      <View style={{flexDirection: 'row', alignItems: 'center', gap: 6}}>
+                        <Ionicons name="water" size={14} color={tds.color} />
+                        <Text style={styles.nutrientParamLabel}>TDS</Text>
+                        <Text style={[styles.nutrientParamValue, {color: tds.color}]}>{reading.tds_value?.toFixed(0) ?? '--'} ppm</Text>
+                      </View>
+                      <Text style={[styles.nutrientParamStatus, {color: tds.color}]}>{tds.label}</Text>
+                    </View>
+                    <AnimatedProgressBar
+                      value={tds.barValue}
+                      height={5}
+                      color={tds.barColor}
+                      backgroundColor="#F0F2F5"
+                      borderRadius={3}
+                    />
+                    <Text style={styles.nutrientRangeText}>Target: {reading.tds_value > 100 ? 'Sufficient' : reading.tds_value > 50 ? 'Add nutrients' : 'Needs dosing'}</Text>
+                  </View>
+                );
+              })()}
+
+              {/* ── Health Summary ── */}
+              {(() => {
+                const health = assessNutrientHealth(reading.current_ph, reading.tds_value);
+                return (
+                  <View style={[styles.nutrientSummary, {backgroundColor: health.color + '08', borderColor: health.color + '20'}]}>
+                    <Ionicons
+                      name={health.level === 'Optimal' ? 'checkmark-circle' : health.level === 'Warning' ? 'alert-circle' : 'warning'}
+                      size={14}
+                      color={health.color}
+                    />
+                    <Text style={[styles.nutrientSummaryText, {color: health.color}]}>{health.message}</Text>
+                  </View>
+                );
+              })()}
             </View>
           )}
         </Animated.View>
 
         <View style={styles.sensorGrid}>
-          <SensorStatusCard title="pH Level" value={reading?.current_ph?.toFixed(1) ?? '--'} icon="flask" colors={['#1976D2', '#42A5F5'] as const} />
+          <SensorStatusCard title="pH Level" value={reading?.current_ph?.toFixed(1) ?? '--'} icon="flask" colors={['#00897B', '#4DB6AC'] as const} />
           <SensorStatusCard title="TDS" value={reading?.tds_value?.toFixed(0) ?? '--'} unit="ppm" icon="water" colors={['#EF6C00', '#FFA726'] as const} />
         </View>
 
@@ -330,8 +604,11 @@ export default function DashboardScreen({navigation}: any) {
                 )}
               </View>
               <View style={styles.pumpsGrid}>
-                <PumpToggle label="Pompa 1 (Circ)" icon="sync" isActive={effectivePumps.pompa1 === 1} activeColor={Colors.accentGreen} onToggle={(v) => handlePumpToggle('pompa1', v ? 1 : 0)} />
-                <PumpToggle label="Pompa 2 (pH)" icon="water" isActive={effectivePumps.pompa2 === 1} activeColor={Colors.tempBlue} onToggle={(v) => handlePumpToggle('pompa2', v ? 1 : 0)} />
+                <DashboardPumpCard label="Water Circulation" on={effectivePumps.pompa1 === 1} color={Colors.waterTeal} onToggle={(v) => handlePumpToggle('pompa1', v ? 1 : 0)} />
+                <View style={styles.pumpSpacer} />
+                <DashboardPumpCard label="pH Down Dosing" on={effectivePumps.pompa2 === 1} color={Colors.tempBlue} onToggle={(v) => handlePumpToggle('pompa2', v ? 1 : 0)} />
+                <View style={styles.pumpSpacer} />
+                <DashboardPumpCard label="Nutrient AB Mix Dosing" on={effectivePumps.pompa3 === 1 || effectivePumps.pompa4 === 1} color={Colors.energyOrange} onToggle={(v) => handleABMixToggle(v ? 1 : 0)} />
               </View>
               {reading?.auto_enabled === true && (
                 <View style={styles.autoNoteRow}>
@@ -341,6 +618,25 @@ export default function DashboardScreen({navigation}: any) {
               )}
             </View>
           )}
+        </View>
+
+        {/* ── AI Vision Feed ── */}
+        <View style={styles.cameraSectionCard}>
+          <SectionHeader icon="camera" colors={[Colors.primaryGreen, Colors.deepGreen] as const} title="AI Vision Feed" badge={cameraError ? 'Offline' : 'Streaming'} dotColor={cameraError ? Colors.statusRed : Colors.statusGreen} textColor={cameraError ? Colors.statusRed : Colors.deepGreen} bgColor={cameraError ? '#FFEBEE' : Colors.tempLight} />
+          <View style={styles.cameraFrame}>
+            <Image source={{uri: `${API_URL}/camera/live?t=${cameraTick}`}} style={styles.cameraImage} onError={() => setCameraError(true)} />
+            {cameraError && (
+              <View style={styles.cameraFallback}>
+                <Ionicons name="videocam-off" size={40} color={Colors.textHint} />
+                <Text style={{fontSize: 15, fontWeight: '700', color: Colors.textPrimary}}>Camera Offline</Text>
+                <Text style={{fontSize: 11, color: Colors.textSecondary}}>Unable to connect to AI camera feed</Text>
+              </View>
+            )}
+          </View>
+          <View style={{flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8}}>
+            <Ionicons name="refresh" size={10} color={Colors.textHint} />
+            <Text style={{fontSize: 10, color: Colors.textHint, flex: 1}}>Refreshing every {(CAMERA_POLL_MS / 1000).toFixed(0)}s</Text>
+          </View>
         </View>
 
         {/* ═══════════════ RECENT ACTIVITY — REDESIGNED ═══════════════ */}
@@ -385,12 +681,12 @@ export default function DashboardScreen({navigation}: any) {
             {reading && (
               <View style={styles.timelineItem}>
                 <View style={styles.timelineTrack}>
-                  <LinearGradient colors={[Colors.tempBlue, '#42A5F5'] as const} style={styles.timelineDot}>
+                  <LinearGradient colors={[Colors.tempBlue, '#4DB6AC'] as const} style={styles.timelineDot}>
                     <Ionicons name="flask" size={11} color="#FFF" />
                   </LinearGradient>
                   <View style={styles.timelineLine} />
                 </View>
-                <TouchableOpacity activeOpacity={0.7} style={styles.timelineCard} onPress={() => navigation?.navigate('PID')}>
+                <TouchableOpacity activeOpacity={0.7} style={styles.timelineCard} onPress={() => navigation?.navigate('Analytics')}>
                   <View style={styles.timelineCardRow}>
                     <View style={styles.timelineCardLeft}>
                       <Text style={styles.timelineTitle}>pH {reading.current_ph?.toFixed(1) ?? '--'} · TDS {reading.tds_value?.toFixed(0) ?? '--'} ppm</Text>
@@ -416,7 +712,7 @@ export default function DashboardScreen({navigation}: any) {
             {reading && (
               <View style={styles.timelineItem}>
                 <View style={styles.timelineTrack}>
-                  <LinearGradient colors={[Colors.waterTeal, '#4DB6AC'] as const} style={styles.timelineDot}>
+                  <LinearGradient colors={[Colors.waterTeal, '#42A5F5'] as const} style={styles.timelineDot}>
                     <Ionicons name="water" size={11} color="#FFF" />
                   </LinearGradient>
                   <View style={styles.timelineLine} />
@@ -451,7 +747,7 @@ export default function DashboardScreen({navigation}: any) {
             )}
 
             {/* Activity 4: Pump Status (only when active) */}
-            {(effectivePumps.pompa1 === 1 || effectivePumps.pompa2 === 1) && (
+            {(effectivePumps.pompa1 === 1 || effectivePumps.pompa2 === 1 || effectivePumps.pompa3 === 1 || effectivePumps.pompa4 === 1) && (
               <View style={styles.timelineItem}>
                 <View style={styles.timelineTrack}>
                   <LinearGradient colors={[Colors.solarAmber, Colors.solarYellow] as const} style={styles.timelineDot}>
@@ -459,30 +755,19 @@ export default function DashboardScreen({navigation}: any) {
                   </LinearGradient>
                   <View style={styles.timelineLineLast} />
                 </View>
-                <TouchableOpacity activeOpacity={0.7} style={[styles.timelineCard, styles.timelineCardPump]} onPress={() => setControlExpanded(true)}>
+                <TouchableOpacity activeOpacity={0.7} style={styles.timelineCard} onPress={() => navigation?.navigate('Automation')}>
                   <View style={styles.timelineCardRow}>
                     <View style={styles.timelineCardLeft}>
                       <Text style={styles.timelineTitle}>Pumps Running</Text>
                       <View style={styles.timelinePumpRow}>
-                        {effectivePumps.pompa1 === 1 && (
-                          <View style={[styles.pumpMiniBadge, {backgroundColor: Colors.accentGreen + '18'}]}>
-                            <View style={[styles.pumpMiniDot, {backgroundColor: Colors.accentGreen}]} />
-                            <Text style={[styles.pumpMiniText, {color: Colors.accentGreen}]}>Pompa 1</Text>
-                          </View>
-                        )}
-                        {effectivePumps.pompa2 === 1 && (
-                          <View style={[styles.pumpMiniBadge, {backgroundColor: Colors.tempBlue + '18'}]}>
-                            <View style={[styles.pumpMiniDot, {backgroundColor: Colors.tempBlue}]} />
-                            <Text style={[styles.pumpMiniText, {color: Colors.tempBlue}]}>Pompa 2</Text>
-                          </View>
-                        )}
+                        {effectivePumps.pompa1 === 1 && <View style={[styles.pumpActiveDot, {backgroundColor: Colors.waterTeal}]} />}
+                        {effectivePumps.pompa2 === 1 && <View style={[styles.pumpActiveDot, {backgroundColor: Colors.tempBlue}]} />}
+                        {(effectivePumps.pompa3 === 1 || effectivePumps.pompa4 === 1) && <View style={[styles.pumpActiveDot, {backgroundColor: Colors.energyOrange}]} />}
+                        <Text style={styles.pumpActiveCount}>({Object.values(effectivePumps).filter(Boolean).length} active)</Text>
                       </View>
                     </View>
                     <View style={styles.timelineCardRight}>
-                      <View style={[styles.timelineChip, {backgroundColor: Colors.solarLight}]}>
-                        <Ionicons name="flash" size={10} color={Colors.solarAmber} />
-                        <Text style={[styles.timelineChipText, {color: Colors.solarAmber, marginLeft: 2}]}>Active</Text>
-                      </View>
+                      <Ionicons name="chevron-forward" size={14} color="#D0D5DD" />
                     </View>
                   </View>
                 </TouchableOpacity>
@@ -498,7 +783,7 @@ export default function DashboardScreen({navigation}: any) {
                   </LinearGradient>
                   <View style={styles.timelineLineLast} />
                 </View>
-                <TouchableOpacity activeOpacity={0.7} style={styles.timelineCard}>
+                <TouchableOpacity activeOpacity={0.7} style={styles.timelineCard} onPress={() => navigation?.navigate('Analytics')}>
                   <View style={styles.timelineCardRow}>
                     <View style={styles.timelineCardLeft}>
                       <Text style={styles.timelineTitle}>Night Mode Active</Text>
@@ -512,6 +797,7 @@ export default function DashboardScreen({navigation}: any) {
                         <View style={[styles.timelineActiveDot, {backgroundColor: '#6366f1'}]} />
                         <Text style={[styles.timelineChipText, {color: '#4f46e5', marginLeft: 3}]}>On</Text>
                       </View>
+                      <Ionicons name="chevron-forward" size={14} color="#D0D5DD" />
                     </View>
                   </View>
                 </TouchableOpacity>
@@ -578,12 +864,26 @@ const styles = StyleSheet.create({
   heroBadgeDot: {width: 6, height: 6, borderRadius: 3},
   heroBadgeText: {fontSize: 11, fontWeight: '700', color: '#fff', letterSpacing: 0.3},
   mainStatusCard: {backgroundColor: '#FFFFFF', marginHorizontal: 16, borderRadius: 24, padding: 24, marginBottom: 24, shadowColor: Colors.primaryGreen, shadowOffset: {width: 0, height: 8}, shadowOpacity: 0.15, shadowRadius: 24, elevation: 8},
-  mainStatusHeader: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20},
-  mainStatusLabel: {fontSize: 14, color: '#8F9BB3', fontWeight: '600', marginBottom: 6, letterSpacing: 0.3},
-  mainStatusValue: {fontSize: 18, fontWeight: '800', color: '#2E3A59', letterSpacing: -0.3},
+  mainStatusHeader: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16},
+  mainStatusLabel: {fontSize: 14, color: '#8F9BB3', fontWeight: '600', marginBottom: 8, letterSpacing: 0.3},
+  mainStatusSub: {fontSize: 12, color: '#8F9BB3', fontWeight: '500', marginTop: 4},
   statusBadge: {flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20},
   statusBadgeDot: {width: 8, height: 8, borderRadius: 4, marginRight: 6},
   statusBadgeText: {fontSize: 12, fontWeight: '700'},
+  /* Nutrient Health styles */
+  nutrientIconWrap: {width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center'},
+  nutrientBadge: {flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, alignSelf: 'flex-start'},
+  nutrientBadgeDot: {width: 7, height: 7, borderRadius: 3.5},
+  nutrientBadgeText: {fontSize: 11, fontWeight: '800', letterSpacing: 0.5},
+  nutrientParams: {gap: 16},
+  nutrientRow: {gap: 6},
+  nutrientRowHeader: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'},
+  nutrientParamLabel: {fontSize: 12, color: '#8F9BB3', fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase'},
+  nutrientParamValue: {fontSize: 15, fontWeight: '800', letterSpacing: -0.3},
+  nutrientParamStatus: {fontSize: 10, fontWeight: '800', letterSpacing: 0.3},
+  nutrientRangeText: {fontSize: 9, color: '#A0ABB8', fontWeight: '500'},
+  nutrientSummary: {flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 12, borderWidth: 1},
+  nutrientSummaryText: {fontSize: 12, fontWeight: '700', flex: 1},
   progressContainer: {marginBottom: 4},
   progressBar: {height: 8, backgroundColor: '#F1F3F5', borderRadius: 4, overflow: 'hidden', marginBottom: 8},
   progressFill: {height: '100%', borderRadius: 4},
@@ -621,7 +921,37 @@ const styles = StyleSheet.create({
   autoBadgeText: {fontSize: 9, fontWeight: '800', color: Colors.solarAmber, letterSpacing: 1},
   autoNoteRow: {flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: Colors.cardBorder},
   autoNoteText: {fontSize: 10, color: Colors.textHint, fontWeight: '500', flex: 1, lineHeight: 14},
-  pumpsGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 8},
+  pumpsGrid: {},
+  pumpSpacer: {height: 8},
+  dashPumpCard: {
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: Colors.cardBorder,
+    overflow: 'hidden',
+    ...Shadows.subtle,
+  },
+  dashPumpAccent: {height: 3},
+  dashPumpBody: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+  },
+  dashPumpText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: -0.2,
+  },
+  dashPumpBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 6,
+  },
   /* ─── Activity Timeline (Redesigned) ─── */
   activitySection: {backgroundColor: '#FFFFFF', marginHorizontal: 16, borderRadius: 24, padding: 20, paddingBottom: 4, marginBottom: 16, shadowColor: Colors.primaryGreen, shadowOffset: {width: 0, height: 8}, shadowOpacity: 0.1, shadowRadius: 20, elevation: 6, borderWidth: 1, borderColor: 'rgba(46,125,50,0.1)'},
   
@@ -635,7 +965,6 @@ const styles = StyleSheet.create({
   
   /* Timeline cards */
   timelineCard: {flex: 1, backgroundColor: '#F8F9FA', borderRadius: 14, paddingVertical: 10, paddingHorizontal: 14, marginLeft: 8, marginBottom: 4, borderWidth: 1, borderColor: 'rgba(0,0,0,0.04)'},
-  timelineCardPump: {backgroundColor: Colors.solarLight},
   timelineCardRow: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'},
   timelineCardLeft: {flex: 1, marginRight: 8},
   timelineCardRight: {flexDirection: 'row', alignItems: 'center', gap: 4},
@@ -650,16 +979,21 @@ const styles = StyleSheet.create({
   timelineChipText: {fontSize: 9, fontWeight: '700', letterSpacing: 0.2},
   timelineActiveDot: {width: 5, height: 5, borderRadius: 2.5},
   
+  /* ─── Camera / AI Vision Feed ─── */
+  cameraSectionCard: {backgroundColor: '#FFFFFF', marginHorizontal: 16, borderRadius: 24, padding: 20, marginBottom: 16, shadowColor: Colors.primaryGreen, shadowOffset: {width: 0, height: 8}, shadowOpacity: 0.1, shadowRadius: 20, elevation: 6, borderWidth: 1, borderColor: 'rgba(46,125,50,0.1)'},
+  cameraFrame: {borderRadius: 16, overflow: 'hidden', aspectRatio: 16 / 9, backgroundColor: Colors.background, position: 'relative'},
+  cameraImage: {width: '100%', height: '100%', resizeMode: 'cover'},
+  cameraFallback: {position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: Colors.background},
+
   /* Mini progress bars */
   timelineMiniBar: {height: 4, backgroundColor: '#F1F3F5', borderRadius: 2, overflow: 'hidden', marginTop: 2, width: 120},
   timelineMiniBarFill: {height: '100%', borderRadius: 2},
   waterMiniBar: {height: 3, backgroundColor: Colors.waterTeal, borderRadius: 2, marginTop: 6, opacity: 0.3},
   
-  /* Pump badges in timeline */
-  timelinePumpRow: {flexDirection: 'row', gap: 6, marginTop: 2},
-  pumpMiniBadge: {flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8},
-  pumpMiniDot: {width: 5, height: 5, borderRadius: 2.5},
-  pumpMiniText: {fontSize: 10, fontWeight: '700', letterSpacing: 0.2},
+  /* Pump status dots in timeline */
+  timelinePumpRow: {flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 2},
+  pumpActiveDot: {width: 8, height: 8, borderRadius: 4},
+  pumpActiveCount: {fontSize: 11, color: Colors.textSecondary, fontWeight: '600', marginLeft: 2},
   
   /* Timeline footer — View All */
   timelineFooter: {marginTop: 8, marginBottom: 12, borderRadius: 14, overflow: 'hidden'},

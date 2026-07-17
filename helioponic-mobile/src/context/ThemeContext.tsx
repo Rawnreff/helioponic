@@ -5,7 +5,7 @@ export const Colors = {
   primaryGreen: '#2E7D32', accentGreen: '#66BB6A', deepGreen: '#1B5E20',
   lightGreen: '#C8E6C9', paleGreen: '#E8F5E9',
   solarYellow: '#FFB300', solarAmber: '#FF8F00', solarLight: '#FFF8E1', energyOrange: '#EF6C00',
-  waterTeal: '#00897B', waterLight: '#B2DFDB', waterBg: '#E0F2F1', tempBlue: '#1976D2', tempLight: '#BBDEFB',
+  waterTeal: '#1E88E5', waterLight: '#BBDEFB', waterBg: '#E3F2FD', tempBlue: '#00897B', tempLight: '#B2DFDB',
   statusGreen: '#43A047', statusYellow: '#FDD835', statusRed: '#E53935', statusOrange: '#FF7043',
   background: '#F4F6F9', surface: '#FFFFFF', cardBorder: '#E8ECF1',
   textPrimary: '#1A1A2E', textSecondary: '#5A6A7E', textHint: '#9EAAB8', glassBorder: 'rgba(255,255,255,0.1)',

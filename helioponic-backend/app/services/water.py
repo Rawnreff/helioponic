@@ -1,12 +1,14 @@
 """
-Water volume calculation service — domain logic for 2-pump hardware.
+Water volume calculation service — domain logic for 4-pump hardware.
 
 Water level is derived from the ultrasonic distance reading (jarak_cm).
   water_level_cm = TANK_HEIGHT_CM - jarak_cm
   water_level_pct = (water_level_cm / TANK_HEIGHT_CM) * 100
 
-Pump 1 (pompa1) = Circulation pump — water is recirculated, no net consumption
-Pump 2 (pompa2) = pH dosing pump — small volume consumed during dosing
+Pump 1 (pompa1) = Water refill / Circulation pump — refills tank when water low
+Pump 2 (pompa2) = pH DOWN dosing pump — doses pH down when pH too high
+Pump 3 (pompa3) = Nutrisi A dosing pump — tandem with Pump 4 for nutrients
+Pump 4 (pompa4) = Nutrisi B dosing pump — tandem with Pump 3 for nutrients
 """
 
 from datetime import datetime

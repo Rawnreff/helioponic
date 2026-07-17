@@ -131,8 +131,8 @@ async def get_device_config(
             "device_id": device_id,
             "jarak_on": 5.0,
             "jarak_off": 2.0,
-            "tds_on": 105.0,
-            "tds_off": 95.0,
+            "tds_on": 95.0,
+            "tds_off": 105.0,
             "ph_min": 5.5,
             "ph_max": 6.5,
             "updated_at": None,
@@ -142,8 +142,8 @@ async def get_device_config(
         "device_id": config.get("device_id", device_id),
         "jarak_on": config.get("jarak_on", 5.0),
         "jarak_off": config.get("jarak_off", 2.0),
-        "tds_on": config.get("tds_on", 105.0),
-        "tds_off": config.get("tds_off", 95.0),
+        "tds_on": config.get("tds_on", 95.0),
+        "tds_off": config.get("tds_off", 105.0),
         "ph_min": config.get("ph_min", 5.5),
         "ph_max": config.get("ph_max", 6.5),
         "updated_at": config.get("updated_at").isoformat() if config.get("updated_at") else None,
@@ -233,8 +233,8 @@ async def update_automation_rules(
         update_data["device_id"] = device_id
         update_data["jarak_on"] = 5.0
         update_data["jarak_off"] = 2.0
-        update_data["tds_on"] = 105.0
-        update_data["tds_off"] = 95.0
+        update_data["tds_on"] = 95.0
+        update_data["tds_off"] = 105.0
         update_data["ph_min"] = 5.5
         update_data["ph_max"] = 6.5
         await db.device_configs.insert_one(update_data)

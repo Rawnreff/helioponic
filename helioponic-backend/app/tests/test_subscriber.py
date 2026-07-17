@@ -3,7 +3,7 @@
 Tests core logic paths of _handle_uplink and _process_deltas using
 mock callbacks (no real MQTT broker or MongoDB needed).
 
-All payloads use raw firmware field names: jarak_cm, tds_value, current_ph, pompa1, pompa2.
+All payloads use raw firmware field names: jarak_cm, tds_value, current_ph, pompa1, pompa2, pompa3, pompa4.
 """
 
 import json
@@ -32,6 +32,8 @@ def make_uplink(overrides: dict = None) -> bytes:
         "current_ph": 6.5,
         "pompa1": 1,
         "pompa2": 0,
+        "pompa3": 0,
+        "pompa4": 0,
     }
     if overrides:
         payload.update(overrides)
@@ -92,6 +94,8 @@ class TestUplinkBasic:
         assert rec["current_ph"] == 6.5
         assert rec["pompa1"] == 1
         assert rec["pompa2"] == 0
+        assert rec["pompa3"] == 0
+        assert rec["pompa4"] == 0
 
     @pytest.mark.asyncio
     async def test_broadcast_callback(self):
@@ -107,6 +111,8 @@ class TestUplinkBasic:
         assert data["current_ph"] == 6.5
         assert data["pompa1"] == 1
         assert data["pompa2"] == 0
+        assert data["pompa3"] == 0
+        assert data["pompa4"] == 0
 
     @pytest.mark.asyncio
     async def test_malformed_json(self):

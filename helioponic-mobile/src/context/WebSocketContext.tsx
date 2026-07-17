@@ -42,16 +42,24 @@ export function WebSocketProvider({children}: {children: React.ReactNode}) {
             current_ph: sensorMsg.current_ph,
             pompa1: sensorMsg.pompa1,
             pompa2: sensorMsg.pompa2,
+            pompa3: sensorMsg.pompa3,
+            pompa4: sensorMsg.pompa4,
             auto_enabled: sensorMsg.auto_enabled ?? true,
             night_mode: sensorMsg.night_mode,
           });
-          // Auto-clear shared overridePumps ketika WS confirm state
+          // Auto-clear shared overridePumps when WS confirms state
           const state = useSensorStore.getState();
           if (state.overridePumps.pompa1 !== undefined && state.overridePumps.pompa1 === sensorMsg.pompa1) {
             clearOverridePump('pompa1');
           }
           if (state.overridePumps.pompa2 !== undefined && state.overridePumps.pompa2 === sensorMsg.pompa2) {
             clearOverridePump('pompa2');
+          }
+          if (state.overridePumps.pompa3 !== undefined && state.overridePumps.pompa3 === sensorMsg.pompa3) {
+            clearOverridePump('pompa3');
+          }
+          if (state.overridePumps.pompa4 !== undefined && state.overridePumps.pompa4 === sensorMsg.pompa4) {
+            clearOverridePump('pompa4');
           }
           break;
         }
@@ -77,6 +85,8 @@ export function WebSocketProvider({children}: {children: React.ReactNode}) {
               current_ph: legacyReading.current_ph || 0,
               pompa1: legacyReading.pompa1 ?? 0,
               pompa2: legacyReading.pompa2 ?? 0,
+              pompa3: legacyReading.pompa3 ?? 0,
+              pompa4: legacyReading.pompa4 ?? 0,
             });
           }
       }

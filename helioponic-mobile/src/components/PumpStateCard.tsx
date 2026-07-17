@@ -1,8 +1,8 @@
-import React from 'react';
-import {View, Text, StyleSheet, TouchableOpacity} from 'react-native';
+import React, {useEffect, useRef} from 'react';
+import {View, Text, StyleSheet, Animated, TouchableOpacity} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 import {Ionicons} from '@expo/vector-icons';
-import {Colors} from '../context/ThemeContext';
+import {Colors, Shadows} from '../context/ThemeContext';
 
 interface Props {
   label: string;
@@ -13,39 +13,130 @@ interface Props {
 }
 
 export const PumpStateCard = React.memo(function PumpStateCard({label, description, on, color, onToggle}: Props) {
+  // Animated values
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const accentWidth = useRef(new Animated.Value(on ? 1 : 0.3)).current;
+
+  // Trigger bounce on state change
+  useEffect(() => {
+    // Scale bounce
+    Animated.sequence([
+      Animated.spring(scaleAnim, {toValue: 0.97, useNativeDriver: true, friction: 8, tension: 100}),
+      Animated.spring(scaleAnim, {toValue: 1, useNativeDriver: true, friction: 5, tension: 80}),
+    ]).start();
+
+    // Accent bar opacity
+    Animated.timing(accentWidth, {
+      toValue: on ? 1 : 0.3,
+      duration: 300,
+      useNativeDriver: false,
+    }).start();
+  }, [on, scaleAnim, accentWidth]);
+
   return (
-    <LinearGradient colors={on ? ([color, color] as const) : (['#E8ECF1', '#E8ECF1'] as const)} start={{x: 0, y: 0}} end={{x: 1, y: 1}} style={styles.cardBorderGradient}>
-      <View style={[styles.cardInner, {backgroundColor: on ? '#FFFFFF' : '#F8F9FA'}]}>
-        <View style={[styles.dot, {backgroundColor: on ? color : '#D0D4D8', shadowColor: on ? color : 'transparent'}]} />
-        <Text style={[styles.label, {color: on ? color : Colors.textHint, fontWeight: on ? '700' : '600'}]}>{label}</Text>
-        {description && (
-          <Text style={[styles.description, {color: on ? color + 'CC' : Colors.textHint}]}>{description}</Text>
-        )}
-        <Text style={[styles.statusText, {color: on ? color : '#B0B8C5'}]}>{on ? 'ON' : 'OFF'}</Text>
-        {onToggle && (
-          <TouchableOpacity
-            style={[styles.toggleBtn, {backgroundColor: on ? color + '18' : Colors.cardBorder}]}
-            onPress={() => onToggle(!on)}
-            activeOpacity={0.7}
-          >
-            <Ionicons name={on ? 'power' : 'power-outline'} size={14} color={on ? color : Colors.textSecondary} />
-            <Text style={[styles.toggleText, {color: on ? color : Colors.textSecondary}]}>
-              {on ? 'Turn OFF' : 'Turn ON'}
-            </Text>
-          </TouchableOpacity>
-        )}
+    <Animated.View style={[styles.outerCard, on && {borderColor: color + '30'}, {transform: [{scale: scaleAnim}]}]}>
+      {/* Colored top accent bar */}
+      <Animated.View style={{opacity: accentWidth}}>
+        <LinearGradient
+          colors={on ? ([color, color + '80'] as const) : (['#D0D5DD', '#E0E4E8'] as const)}
+          start={{x: 0, y: 0}} end={{x: 1, y: 0}}
+          style={styles.accentBar}
+        />
+      </Animated.View>
+
+      {/* Card body */}
+      <View style={[styles.body, {backgroundColor: on ? '#FFFFFF' : '#F8F9FA'}]}>
+        {/* Top: icon + label (full width) + toggle button (absolute) */}
+        <View style={styles.topSection}>
+          <View style={[styles.iconCircle, {backgroundColor: on ? color + '18' : '#E8ECF1'}]}>
+            <Ionicons
+              name={on ? 'flash' : 'flash-outline'}
+              size={18}
+              color={on ? color : Colors.textHint}
+            />
+          </View>
+          <View style={styles.labelArea}>
+            {/* right padding so text doesn't go under the floating toggle button */}
+            <View style={{paddingRight: 36}}>
+              <Text style={[styles.pumpName, {color: on ? color : Colors.textPrimary}]} numberOfLines={1}>
+                {label}
+              </Text>
+              {description && (
+                <Text style={[styles.pumpDesc, {color: on ? color + 'AA' : Colors.textHint}]} numberOfLines={1}>
+                  {description}
+                </Text>
+              )}
+            </View>
+          </View>
+          {/* Simple small toggle button — position absolute so label gets full width */}
+          {onToggle && (
+            <TouchableOpacity
+              style={[styles.toggleBtn, {backgroundColor: on ? color : '#E8ECF1', position: 'absolute', right: 0, top: 0}]}
+              onPress={() => onToggle(!on)}
+              activeOpacity={0.7}
+              hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+            >
+              <Ionicons
+                name={on ? 'power' : 'power-outline'}
+                size={13}
+                color={on ? '#FFFFFF' : '#B0B8C5'}
+              />
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
-    </LinearGradient>
+    </Animated.View>
   );
 });
 
 const styles = StyleSheet.create({
-  cardBorderGradient: {flex: 1, padding: 2, borderRadius: 16},
-  cardInner: {alignItems: 'center', paddingVertical: 14, paddingHorizontal: 8, borderRadius: 14, gap: 4},
-  dot: {width: 14, height: 14, borderRadius: 7, shadowOffset: {width: 0, height: 2}, shadowOpacity: 0.4, shadowRadius: 4, elevation: 4},
-  label: {fontSize: 12, fontWeight: '700', letterSpacing: -0.2},
-  description: {fontSize: 8, fontWeight: '500', textAlign: 'center', letterSpacing: 0.2, lineHeight: 11},
-  statusText: {fontSize: 9, fontWeight: '800', letterSpacing: 1, marginTop: 2},
-  toggleBtn: {flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10},
-  toggleText: {fontSize: 10, fontWeight: '700', letterSpacing: 0.3},
+  outerCard: {
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: Colors.cardBorder,
+    overflow: 'hidden',
+    ...Shadows.subtle,
+  },
+  accentBar: {
+    height: 4,
+  },
+  body: {
+    paddingVertical: 10,
+    paddingHorizontal: 11,
+  },
+  topSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    position: 'relative',
+  },
+  labelArea: {
+    flex: 1,
+  },
+  iconCircle: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pumpName: {
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  pumpDesc: {
+    fontSize: 10,
+    fontWeight: '500',
+    marginTop: 1,
+    letterSpacing: 0.1,
+  },
+  toggleBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

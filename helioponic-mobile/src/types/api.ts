@@ -28,14 +28,14 @@ export interface Device {
 // ─── Sensor Types ──────────────────────────────────────
 export interface SensorReading {
   device_id: string; ts: number; jarak_cm: number; tds_value: number;
-  current_ph: number; pompa1: 0 | 1; pompa2: 0 | 1;
+  current_ph: number; pompa1: 0 | 1; pompa2: 0 | 1; pompa3: 0 | 1; pompa4: 0 | 1;
   auto_enabled?: boolean;
   night_mode?: boolean;
 }
 
 export interface SensorRecord {
   id: string; device_id: string; recorded_at: string; jarak_cm: number;
-  tds_value: number; current_ph: number; pompa1: 0 | 1; pompa2: 0 | 1;
+  tds_value: number; current_ph: number; pompa1: 0 | 1; pompa2: 0 | 1; pompa3: 0 | 1; pompa4: 0 | 1;
 }
 
 // ─── Water Types ───────────────────────────────────────
@@ -147,6 +147,8 @@ export interface WebSocketSensorMessage {
   current_ph: number;
   pompa1: 0 | 1;
   pompa2: 0 | 1;
+  pompa3: 0 | 1;
+  pompa4: 0 | 1;
   water_level_pct?: number;
   auto_enabled?: boolean;
   night_mode?: boolean;

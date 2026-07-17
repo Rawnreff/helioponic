@@ -7,6 +7,7 @@ Realigned to match raw firmware architecture:
 """
 
 import logging
+from datetime import datetime, timedelta, UTC
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -92,10 +93,35 @@ async def lifespan(app: FastAPI):
         mqtt_subscriber.save_sensor = _save_sensor
         mqtt_subscriber.save_water = _save_water
 
-        # Wire notification persistence callback
+        # Wire notification persistence callback with DB-level dedup
         async def _save_notification(notif: dict):
+            """Save notification to MongoDB with belt-and-suspenders dedup.
+
+            Before inserting, queries the database for an existing notification
+            with the SAME (device_id, type) pair within the last 30 minutes.
+            If found, the notification is SUPPRESSED to prevent any duplicate
+            from reaching the collection — even if in-memory cooldown failed.
+            """
             from app.core.database import get_database
             db = await get_database()
+
+            # Belt-and-suspenders: check for duplicate notification in DB
+            device_id = notif.get("device_id", "")
+            notif_type = notif.get("type", "")
+            if device_id and notif_type:
+                cooldown_cutoff = datetime.now(UTC) - timedelta(minutes=30)
+                existing = await db.notifications.find_one({
+                    "device_id": device_id,
+                    "type": notif_type,
+                    "created_at": {"$gte": cooldown_cutoff},
+                })
+                if existing:
+                    logger.debug(
+                        f"DUPLICATE SUPPRESSED: type={notif_type} device={device_id} "
+                        f"— identical notification exists within 30min window"
+                    )
+                    return
+
             await db.notifications.insert_one(notif)
 
         mqtt_subscriber.save_notification = _save_notification

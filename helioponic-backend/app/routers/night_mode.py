@@ -74,8 +74,8 @@ async def activate_night_mode(
         saved_thresholds = {
             "jarak_on": float(current_config.get("jarak_on", 105)),
             "jarak_off": float(current_config.get("jarak_off", 95)),
-            "tds_on": current_config.get("tds_on", 105.0),
-            "tds_off": current_config.get("tds_off", 95.0),
+            "tds_on": current_config.get("tds_on", 95.0),
+            "tds_off": current_config.get("tds_off", 105.0),
             "auto_enabled": current_config.get("auto_enabled", True),
         }
 
@@ -141,11 +141,10 @@ async def deactivate_night_mode(
 
     # Restore thresholds to device_configs
     restored_config = {
-        "device_id": device_id,
-        "jarak_on": float(saved.get("jarak_on", 105)),
-        "jarak_off": float(saved.get("jarak_off", 95)),
-        "tds_on": saved.get("tds_on", 105.0),
-        "tds_off": saved.get("tds_off", 95.0),
+        "device_id": device_id,            "jarak_on": float(saved.get("jarak_on", 5)),
+        "jarak_off": float(saved.get("jarak_off", 2)),
+        "tds_on": saved.get("tds_on", 95.0),
+        "tds_off": saved.get("tds_off", 105.0),
         "auto_enabled": saved.get("auto_enabled", True),
         "updated_at": now,
     }
