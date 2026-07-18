@@ -120,8 +120,16 @@ async def get_sensor_history(
     await verify_device_access(db, device_id, user_id)
 
     now = datetime.now(UTC)
-    from_dt = datetime.fromisoformat(from_date) if from_date else now - timedelta(hours=24)
-    to_dt = datetime.fromisoformat(to_date) if to_date else now
+    from_dt = (
+        datetime.fromisoformat(from_date.replace("Z", "+00:00")).astimezone(timezone.utc)
+        if from_date
+        else now - timedelta(hours=24)
+    )
+    to_dt = (
+        datetime.fromisoformat(to_date.replace("Z", "+00:00")).astimezone(timezone.utc)
+        if to_date
+        else now
+    )
 
     cursor = db.sensor_logs.find({
         "device_id": device_id,
@@ -172,8 +180,16 @@ async def get_water_history(
     await verify_device_access(db, device_id, user_id)
 
     now = datetime.now(UTC)
-    from_dt = datetime.fromisoformat(from_date) if from_date else now - timedelta(hours=24)
-    to_dt = datetime.fromisoformat(to_date) if to_date else now
+    from_dt = (
+        datetime.fromisoformat(from_date.replace("Z", "+00:00")).astimezone(timezone.utc)
+        if from_date
+        else now - timedelta(hours=24)
+    )
+    to_dt = (
+        datetime.fromisoformat(to_date.replace("Z", "+00:00")).astimezone(timezone.utc)
+        if to_date
+        else now
+    )
 
     cursor = db.water_records.find({
         "device_id": device_id,
@@ -401,18 +417,32 @@ async def export_sensor_csv(
     device_id: str = Query("HELIO_001"),
     from_date: str = Query(default=None),
     to_date: str = Query(default=None),
+    limit: int = Query(50000, ge=100, le=100000),
     user_id: str = Depends(get_current_user_id),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ):
-    """Export ALL raw sensor data as CSV for a given time range.
+    """Export sensor data as aggregated CSV with dynamic downsampling.
 
-    - If `from_date` and `to_date` are provided, exports data in that range.
-    - Otherwise uses `range` parameter:
+    Uses a conditional MongoDB aggregation pipeline instead of raw .find()
+    so that dense sub-second duplicates are collapsed into sensible blocks:
+      - `daily`   → group by minute (   1 min  per row)
+      - `weekly`  → group by hour   (  60 min  per row)
+      - `monthly` → group by hour   (  60 min  per row)
+
+    All ranges use the same per-hour granularity so that the total row
+    count scales proportionally with coverage days:
+      - daily   (  1 day)  ≈ 1,440 rows (raw minute-level)
+      - weekly  (  7 days) ≈   168 rows
+      - monthly (~30 days) ≈   720 rows
+
+    If `from_date` and `to_date` are provided, exports data in that range.
+    Otherwise uses `range` parameter:
       - `daily`   → entire current calendar day (00:00 – 23:59)
       - `weekly`  → last 7 full days
       - `monthly` → last 30 full days
 
-    No downsampling — every stored record is included.
+    Capped at `limit` records (default 50 000) to prevent OOM
+    on mobile devices from unbounded queries.
     """
     await verify_device_access(db, device_id, user_id)
 
@@ -420,9 +450,21 @@ async def export_sensor_csv(
 
     # Compute time range with proper day boundaries
     if from_date and to_date:
-        # from_date and to_date are full ISO strings from the frontend
-        from_dt = datetime.fromisoformat(from_date)
-        to_dt = datetime.fromisoformat(to_date)
+        # from_date and to_date are full ISO strings from the frontend.
+        # Enforce explicit UTC-awareness — parse with tzinfo set to UTC
+        # so MongoDB's native BSON Date storage matches exactly.
+        try:
+            from_dt = datetime.fromisoformat(
+                from_date.replace("Z", "+00:00")
+            ).astimezone(timezone.utc)
+            to_dt = datetime.fromisoformat(
+                to_date.replace("Z", "+00:00")
+            ).astimezone(timezone.utc)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid date format — expected ISO 8601 (e.g. 2026-07-11T00:00:00Z): {e}",
+            )
     else:
         # Use start-of-day boundaries for predictable results
         start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -436,35 +478,111 @@ async def export_sensor_csv(
             from_dt = start_of_today - timedelta(days=30)
             to_dt = start_of_today + timedelta(days=1) - timedelta(microseconds=1)
 
-    # Simple raw-data cursor — no aggregation, no downsampling
-    cursor = db.sensor_logs.find(
-        {
+    logger.info(
+        "Received export request: range=%s, device_id=%s, "
+        "from_date=%s, to_date=%s "
+        "-> parsed from_dt=%s, to_dt=%s",
+        range, device_id, from_date, to_date,
+        from_dt.isoformat(), to_dt.isoformat(),
+    )
+
+    # ── Aggregation pipeline: deduplicate & downsample ────────────
+    # Downsampling granularity is driven by the `range` parameter:
+    #   daily   → group by minute
+    #   weekly  → group by hour (1-hour blocks)
+    #   monthly → group by hour (1-hour blocks)
+    #
+    # Both weekly and monthly use the same 1-hour grouping so that total
+    # row count scales roughly linearly with coverage days:
+    #   weekly  (7 days)  → 24 groups/day × 7  =  168 rows
+    #   monthly (30 days) → 24 groups/day × 30 ≈ 720 rows
+    group_stage = None
+
+    match_stage: dict = {
+        "$match": {
             "device_id": device_id,
             "recorded_at": {"$gte": from_dt, "$lte": to_dt},
         },
-        {
-            "recorded_at": 1,
-            "current_ph": 1,
-            "tds_value": 1,
-            "jarak_cm": 1,
-            "pompa1": 1, "pompa2": 1, "pompa3": 1, "pompa4": 1,
-        },
-    ).sort("recorded_at", 1)
+    }
+
+    if range == "daily":
+        group_stage = {
+            "$group": {
+                "_id": {
+                    "year": {"$year": "$recorded_at"},
+                    "month": {"$month": "$recorded_at"},
+                    "day": {"$dayOfMonth": "$recorded_at"},
+                    "hour": {"$hour": "$recorded_at"},
+                    "minute": {"$minute": "$recorded_at"},
+                },
+                "recorded_at": {"$first": "$recorded_at"},
+                "current_ph": {"$avg": "$current_ph"},
+                "tds_value": {"$avg": "$tds_value"},
+                "jarak_cm": {"$avg": "$jarak_cm"},
+                "pompa1": {"$max": "$pompa1"},
+                "pompa2": {"$max": "$pompa2"},
+                "pompa3": {"$max": "$pompa3"},
+                "pompa4": {"$max": "$pompa4"},
+            },
+        }
+    else:  # weekly & monthly both use 1-hour grouping
+        # Same hour-level grouping for both ranges so total rows scales
+        # proportionally with coverage days (24 rows/day × N days):
+        #   weekly  (7 days)  ≈ 168 rows
+        #   monthly (30 days) ≈ 720 rows
+        group_stage = {
+            "$group": {
+                "_id": {
+                    "year": {"$year": "$recorded_at"},
+                    "month": {"$month": "$recorded_at"},
+                    "day": {"$dayOfMonth": "$recorded_at"},
+                    "hour": {"$hour": "$recorded_at"},
+                },
+                "recorded_at": {"$first": "$recorded_at"},
+                "current_ph": {"$avg": "$current_ph"},
+                "tds_value": {"$avg": "$tds_value"},
+                "jarak_cm": {"$avg": "$jarak_cm"},
+                "pompa1": {"$max": "$pompa1"},
+                "pompa2": {"$max": "$pompa2"},
+                "pompa3": {"$max": "$pompa3"},
+                "pompa4": {"$max": "$pompa4"},
+            },
+        }
+
+    # $sort BEFORE $group ensures $first returns the chronologically first
+    # document in each time block.  $sort AFTER $group orders the final output.
+    pipeline = [
+        match_stage,
+        {"$sort": {"recorded_at": 1}},   # required for deterministic $first
+        group_stage,
+        {"$sort": {"recorded_at": 1}},   # output chronological order
+        {"$limit": limit},
+    ]
+    cursor = db.sensor_logs.aggregate(pipeline)
 
     # ── Async generator: yields CSV row strings ────────────────────
+    # Header is DEFERRED until the first data row is confirmed — if the
+    # cursor yields zero documents the response body stays empty, which
+    # the frontend detects as "No data" instead of sharing a header-only CSV.
     async def csv_stream() -> AsyncGenerator[str, None]:
         buf = io.StringIO()
         writer = csv.writer(buf)
-        writer.writerow(CSV_HEADERS)
-        yield buf.getvalue()
-        buf.seek(0)
-        buf.truncate()
+        header_written = False
 
         WATER_TANK_CM = 7.0
 
         async for doc in cursor:
+            if not header_written:
+                writer.writerow(CSV_HEADERS)
+                yield buf.getvalue()
+                buf.seek(0)
+                buf.truncate()
+                header_written = True
+
             ts = doc.get("recorded_at")
-            ts_str = ts.strftime("%b %d, %I:%M:%S %p") if ts else ""
+            # Convert from UTC to WIB (UTC+7) for local timestamps
+            ts_local = ts + timedelta(hours=7) if ts else None
+            ts_str = ts_local.strftime("%b %d, %I:%M:%S %p") if ts_local else ""
 
             ph = doc.get("current_ph", 0) or 0
             tds = doc.get("tds_value", 0) or 0

@@ -46,12 +46,7 @@ async def ensure_indexes():
     await db.sensor_logs.create_index("device_id")
     await db.sensor_logs.create_index([("recorded_at", -1)])
     await db.sensor_logs.create_index([("device_id", 1), ("recorded_at", -1)])
-    # TTL index: auto-delete sensor data after 7 days
-    await db.sensor_logs.create_index(
-        [("recorded_at", 1)],
-        expireAfterSeconds=604800,  # 7 days
-        name="sensor_logs_ttl_7d",
-    )
+    # (TTL index for sensor_logs removed by user request — data retained permanently)
 
     # water_records indexes
     await db.water_records.create_index("device_id")

@@ -112,29 +112,22 @@ function computeWaterPct(jarakCm: number): number {
   return Math.max(0, Math.min(100, (waterDepth / TANK_DEPTH_CM) * 100));
 }
 
-/**
- * Compute UTC-aligned date range for a given period.
- *
- * All MongoDB timestamps are stored in UTC, so we use UTC methods
- * (setUTCHours, setUTCDate) to avoid timezone shifts.
- * Without this, a user in UTC+7 would see the Day export start at
- * UTC 16:00 of the previous day instead of UTC 00:00 of today.
- */
 function getTimeRange(period: Period): {from: Date; to: Date} {
-  const now = new Date();
-  const from = new Date(now);
-  const to = new Date(now);
+  // Safe UTC date generation — never mutate shared Date objects.
+  // All MongoDB timestamps are stored in UTC, so use UTC methods
+  // (setUTCHours, setUTCDate) to avoid timezone shifts.
+  const to = new Date();
+  to.setUTCHours(23, 59, 59, 999);
+  let from = new Date();
+
   if (period === 'day') {
     from.setUTCHours(0, 0, 0, 0);
-    to.setUTCHours(23, 59, 59, 999);
   } else if (period === 'week') {
-    from.setUTCDate(from.getUTCDate() - 7);
+    from.setUTCDate(to.getUTCDate() - 7);
     from.setUTCHours(0, 0, 0, 0);
-    to.setUTCHours(23, 59, 59, 999);
   } else {
-    from.setUTCDate(from.getUTCDate() - 30);
+    from.setUTCDate(to.getUTCDate() - 30);
     from.setUTCHours(0, 0, 0, 0);
-    to.setUTCHours(23, 59, 59, 999);
   }
   return {from, to};
 }
@@ -422,11 +415,15 @@ export default function AnalyticsScreen() {
     if (w > 0 && w !== chartWidth) setChartWidth(w);
   }, [chartWidth]);
 
-  // ── Export to CSV (simple raw-data export) ──
+  // ── Export to CSV (aggregated, downsampled) ──
   const handleExportCSV = useCallback(async () => {
     const {from, to} = getTimeRange(period);
     const csvRange: 'daily' | 'weekly' | 'monthly' =
       period === 'day' ? 'daily' : period === 'week' ? 'weekly' : 'monthly';
+
+    console.log('[Analytics] Exporting', period, 'range:', csvRange,
+      '| from:', from.toISOString(), '| to:', to.toISOString(),
+      '| device:', activeDeviceId);
 
     setExporting(true);
     try {
@@ -436,7 +433,10 @@ export default function AnalyticsScreen() {
         from.toISOString(), to.toISOString(),
       );
 
-      if (!csvContent.trim()) {
+      // Belt-and-suspenders: backend returns empty body when 0 records,
+      // but also check for header-only CSV (single line) as a safety net.
+      const trimmed = csvContent.trim();
+      if (!trimmed || trimmed.split('\n').length <= 1) {
         Alert.alert('No Data', 'No sensor data found for this period.');
         return;
       }
@@ -444,7 +444,7 @@ export default function AnalyticsScreen() {
       const label = period;
       const fileName = `helioponic_${label}_${new Date().toISOString().slice(0, 10)}.csv`;
       const file = new File(Paths.cache, fileName);
-      await file.write(csvContent);
+      file.write(csvContent);
 
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) {
@@ -507,9 +507,13 @@ export default function AnalyticsScreen() {
             disabled={exporting || loading}
             activeOpacity={0.7}
           >
-            <Ionicons name="download-outline" size={18} color={exporting ? Colors.textHint : Colors.primaryGreen} />
+            <Ionicons
+              name={exporting ? 'sync-outline' : 'download-outline'}
+              size={18}
+              color={exporting ? Colors.textHint : Colors.primaryGreen}
+            />
             <Text style={[styles.exportText, {color: exporting ? Colors.textHint : Colors.primaryGreen}]}>
-              {exporting ? '...' : 'CSV'}
+              {exporting ? '…' : 'CSV'}
             </Text>
           </TouchableOpacity>
         </View>
