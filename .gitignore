@@ -108,9 +108,6 @@ helioponic-firmware/arduino_uno/helioponic_uno_raw.ino
 
 helioponic-firmware/**/secrets.h
 
-# ---- Development Tools (local scripts, not production) ----
-tools/
-
 # ---- Windows ----
 nul
 
