@@ -31,6 +31,8 @@ export interface SensorReading {
   current_ph: number; pompa1: 0 | 1; pompa2: 0 | 1; pompa3: 0 | 1; pompa4: 0 | 1;
   auto_enabled?: boolean;
   night_mode?: boolean;
+  water_level_pct?: number;
+  tank_depth_cm?: number;
 }
 
 export interface SensorRecord {
@@ -44,12 +46,12 @@ export interface WaterRecord {id: string; device_id: string; recorded_at: string
 
 // ─── Device Config Types ───────────────────────────────
 export interface DeviceConfig {
-  device_id: string; jarak_on: number; jarak_off: number;
+  device_id: string; tank_depth_cm?: number; jarak_on: number; jarak_off: number;
   tds_on: number; tds_off: number; ph_min: number; ph_max: number;
   updated_at: string | null;
 }
 export interface DeviceConfigPayload {
-  device_id: string; jarak_on: number; jarak_off: number;
+  device_id: string; tank_depth_cm?: number; jarak_on: number; jarak_off: number;
   tds_on: number; tds_off: number; ph_min: number; ph_max: number;
 }
 
@@ -150,6 +152,7 @@ export interface WebSocketSensorMessage {
   pompa3: 0 | 1;
   pompa4: 0 | 1;
   water_level_pct?: number;
+  tank_depth_cm?: number;
   auto_enabled?: boolean;
   night_mode?: boolean;
   recorded_at: string;

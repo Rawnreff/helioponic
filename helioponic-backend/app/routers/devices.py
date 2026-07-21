@@ -120,7 +120,7 @@ async def get_device_config(
     """Return the current device configuration thresholds.
 
     Returns default values if no configuration has been saved yet.
-    Defaults: jarak_on=5, jarak_off=2 for 7cm tank depth.
+    Defaults: tank_depth_cm=32, jarak_on=5, jarak_off=2.
     """
     config = await db.device_configs.find_one(
         {"device_id": device_id},
@@ -129,6 +129,7 @@ async def get_device_config(
     if not config:
         return {
             "device_id": device_id,
+            "tank_depth_cm": 32.0,
             "jarak_on": 5.0,
             "jarak_off": 2.0,
             "tds_on": 95.0,
@@ -140,6 +141,7 @@ async def get_device_config(
 
     return {
         "device_id": config.get("device_id", device_id),
+        "tank_depth_cm": config.get("tank_depth_cm", 32.0),
         "jarak_on": config.get("jarak_on", 5.0),
         "jarak_off": config.get("jarak_off", 2.0),
         "tds_on": config.get("tds_on", 95.0),
@@ -273,6 +275,7 @@ async def update_device_config(
     # Save to MongoDB
     config_doc = {
         "device_id": device_id,
+        "tank_depth_cm": payload.tank_depth_cm,
         "jarak_on": payload.jarak_on,
         "jarak_off": payload.jarak_off,
         "tds_on": payload.tds_on,
@@ -287,6 +290,7 @@ async def update_device_config(
     # Publish to MQTT downlink for the ESP32
     if mqtt_publish_downlink:
         await mqtt_publish_downlink({
+            "tank_depth_cm": payload.tank_depth_cm,
             "jarak_on": payload.jarak_on,
             "jarak_off": payload.jarak_off,
             "tds_on": payload.tds_on,
@@ -304,6 +308,7 @@ async def update_device_config(
 
     logger.info(
         f"Device config updated: device_id={device_id}, "
+        f"tank_depth={payload.tank_depth_cm}cm, "
         f"jarak_on={payload.jarak_on}, jarak_off={payload.jarak_off}, "
         f"tds_on={payload.tds_on}, tds_off={payload.tds_off}, "
         f"ph_min={payload.ph_min}, ph_max={payload.ph_max}"

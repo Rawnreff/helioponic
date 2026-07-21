@@ -27,18 +27,14 @@ function formatRelativeTime(ts: number): string {
   return new Date(ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
 }
 
-function computeWaterPct(jarakCm: number): number {
+function computeWaterPct(jarakCm: number, tankDepthCm?: number, wsPct?: number): number {
+  // Prefer WebSocket-computed value from backend (single source of truth)
+  if (wsPct !== undefined && wsPct !== null && wsPct >= 0 && wsPct <= 100) return wsPct;
+  // Fallback: local computation with dynamic tank depth (default 32cm)
   if (jarakCm >= 999 || jarakCm < 0) return 0;
-  // Match backend WaterCalculator: tank depth 7cm
-  // water_level_pct = ((TANK_DEPTH_CM - jarak_cm) / TANK_DEPTH_CM) × 100
-  // Examples:
-  //   jarak_cm = 0  → 100% (tank full)
-  //   jarak_cm = 3.5 → 50% (half full)
-  //   jarak_cm = 7  → 0% (empty)
-  //   jarak_cm > 7  → 0% (sensor error)
-  const TANK_DEPTH_CM = 7;
-  const waterDepth = TANK_DEPTH_CM - Math.min(jarakCm, TANK_DEPTH_CM);
-  return Math.max(0, Math.min(100, (waterDepth / TANK_DEPTH_CM) * 100));
+  const depth = tankDepthCm || 32;
+  const waterDepth = depth - Math.min(jarakCm, depth);
+  return Math.max(0, Math.min(100, (waterDepth / depth) * 100));
 }
 
 function getWaterStatus(pct: number): {label: string; color: string; icon: string} {
@@ -107,7 +103,7 @@ function assessNutrientHealth(ph: number | undefined, tds: number | undefined): 
 }
 
 const WaterCard = React.memo(function WaterCard({reading}: {reading: any}) {
-  const pct = reading ? computeWaterPct(reading.jarak_cm) : 0;
+  const pct = reading ? computeWaterPct(reading.jarak_cm, reading.tank_depth_cm, reading.water_level_pct) : 0;
   const status = getWaterStatus(pct);
   return (
     <View style={styles.waterFullCard}>
@@ -720,10 +716,10 @@ export default function DashboardScreen({navigation}: any) {
                 <TouchableOpacity activeOpacity={0.7} style={styles.timelineCard} onPress={() => navigation?.navigate('Analytics')}>
                   <View style={styles.timelineCardRow}>
                     <View style={styles.timelineCardLeft}>
-                      <Text style={styles.timelineTitle}>Water Level {Math.round(computeWaterPct(reading.jarak_cm))}%</Text>
+                      <Text style={styles.timelineTitle}>Water Level {Math.round(computeWaterPct(reading.jarak_cm, reading.tank_depth_cm, reading.water_level_pct))}%</Text>
                       <View style={styles.timelineMetaRow}>
                         <Ionicons name="resize" size={11} color={Colors.waterTeal} />
-                        <Text style={styles.timelineMeta}>Tank {reading.jarak_cm.toFixed(1)}cm · {Math.round(computeWaterPct(reading.jarak_cm))}% full</Text>
+                        <Text style={styles.timelineMeta}>Tank {reading.jarak_cm.toFixed(1)}cm · {Math.round(computeWaterPct(reading.jarak_cm, reading.tank_depth_cm, reading.water_level_pct))}% full</Text>
                       </View>
                     </View>
                     <View style={styles.timelineCardRight}>
@@ -735,7 +731,7 @@ export default function DashboardScreen({navigation}: any) {
                   </View>
                   {/* mini water bar */}
                   <AnimatedProgressBar
-                    value={Math.round(computeWaterPct(reading.jarak_cm))}
+                    value={Math.round(computeWaterPct(reading.jarak_cm, reading.tank_depth_cm, reading.water_level_pct))}
                     height={3}
                     color={Colors.waterTeal}
                     backgroundColor="transparent"

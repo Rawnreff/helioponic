@@ -376,6 +376,12 @@ class MQTTSubscriber:
 
         # ----- 5. Broadcast via WebSocket -----
         if self.on_sensor_reading:
+            tank_depth = config.get("tank_depth_cm", 32.0) if config else 32.0
+            # Compute water_level_pct with per-device tank depth
+            if reading.jarak_cm < 999 and reading.jarak_cm >= 0:
+                water_pct = round(min(100, max(0, (tank_depth - reading.jarak_cm) / tank_depth * 100)))
+            else:
+                water_pct = 0
             broadcast_data = {
                 "type": "sensor_update",
                 "device_id": device_id,
@@ -387,7 +393,8 @@ class MQTTSubscriber:
                 "pompa2": reading.pompa2,
                 "pompa3": reading.pompa3,
                 "pompa4": reading.pompa4,
-                "water_level_pct": self.water_calc.jarak_to_water_level_pct(reading.jarak_cm),
+                "water_level_pct": water_pct,
+                "tank_depth_cm": tank_depth,
                 "night_mode": is_night,
                 "auto_enabled": auto_enabled,
                 "recorded_at": now.isoformat(),

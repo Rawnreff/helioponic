@@ -46,6 +46,8 @@ export function WebSocketProvider({children}: {children: React.ReactNode}) {
             pompa4: sensorMsg.pompa4,
             auto_enabled: sensorMsg.auto_enabled ?? true,
             night_mode: sensorMsg.night_mode,
+            water_level_pct: sensorMsg.water_level_pct,
+            tank_depth_cm: sensorMsg.tank_depth_cm,
           });
           // Auto-clear shared overridePumps when WS confirms state
           const state = useSensorStore.getState();

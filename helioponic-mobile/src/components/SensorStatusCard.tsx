@@ -5,9 +5,10 @@ import {Ionicons} from '@expo/vector-icons';
 
 interface Props {
   title: string; value: string; unit?: string; icon: string; colors: readonly [string, string, ...string[]]; variant?: 'compact' | 'full';
+  tankDepthCm?: number;
 }
 
-export const SensorStatusCard = React.memo(function SensorStatusCard({title, value, unit, icon, colors, variant = 'compact'}: Props) {
+export const SensorStatusCard = React.memo(function SensorStatusCard({title, value, unit, icon, colors, variant = 'compact', tankDepthCm}: Props) {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   useEffect(() => {Animated.timing(fadeAnim, {toValue: 1, duration: 600, useNativeDriver: true}).start();}, []);
 
@@ -25,7 +26,7 @@ export const SensorStatusCard = React.memo(function SensorStatusCard({title, val
                 <Text style={[styles.cardFullValue, {color: colors[0] as string}]}>{value}</Text>
                 {unit !== undefined && unit !== '' && <Text style={styles.cardFullUnit}>{unit}</Text>}
               </View>
-              {unit === '%' && <Text style={styles.cardFullRange}>Tank depth: 7 cm</Text>}
+              {unit === '%' && <Text style={styles.cardFullRange}>Tank depth: {tankDepthCm || 32} cm</Text>}
               {title === 'TDS' && <Text style={styles.cardFullRange}>Target: 0 - 2000 ppm</Text>}
               {title === 'pH Level' && <Text style={styles.cardFullRange}>Safe: 4.0 - 8.0</Text>}
             </View>

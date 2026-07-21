@@ -14,11 +14,11 @@ import {PumpStateCard} from '../components/PumpStateCard';
 import PIDDiagram from '../components/PIDDiagram';
 
 // Water level percentage calculator
-function computeWaterPct(jarakCm: number): number {
+function computeWaterPct(jarakCm: number, tankDepthCm?: number): number {
   if (jarakCm >= 999 || jarakCm < 0) return 0;
-  const TANK_DEPTH_CM = 7;
-  const waterDepth = TANK_DEPTH_CM - Math.min(jarakCm, TANK_DEPTH_CM);
-  return Math.max(0, Math.min(100, (waterDepth / TANK_DEPTH_CM) * 100));
+  const depth = tankDepthCm || 32;
+  const waterDepth = depth - Math.min(jarakCm, depth);
+  return Math.max(0, Math.min(100, (waterDepth / depth) * 100));
 }
 
 // ── Mini pump indicator for Relay Pumps health ────────────────────────
@@ -364,11 +364,11 @@ export default function PIDScreen() {
               </View>
               <Text style={styles.dashLabel}>Water Level</Text>
               <View style={styles.dashValueRow}>
-                <Text style={[styles.dashValue, {color: '#1E88E5'}]}>{reading ? Math.round(computeWaterPct(reading.jarak_cm)) : '--'}</Text>
+                <Text style={[styles.dashValue, {color: '#1E88E5'}]}>{reading ? Math.round(computeWaterPct(reading.jarak_cm, latestReading?.tank_depth_cm)) : '--'}</Text>
                 <Text style={styles.dashUnit}>%</Text>
               </View>
-              <AnimatedProgressBar value={reading ? Math.round(computeWaterPct(reading.jarak_cm)) : 0} height={4} color="#1E88E5" style={{marginTop: 8, width: '80%'}} />
-              <Text style={styles.dashRange}>Tank depth: 7 cm</Text>
+              <AnimatedProgressBar value={reading ? Math.round(computeWaterPct(reading.jarak_cm, latestReading?.tank_depth_cm)) : 0} height={4} color="#1E88E5" style={{marginTop: 8, width: '80%'}} />
+              <Text style={styles.dashRange}>Tank depth: {latestReading?.tank_depth_cm || 32} cm</Text>
               <View style={[styles.dashStatusBadge, {backgroundColor: reading && reading.jarak_cm < 999 && reading.jarak_cm >= 0 ? '#1E88E5' + '12' : '#E53935' + '12'}]}>
                 <View style={[styles.dashStatusDot, {backgroundColor: reading && reading.jarak_cm < 999 && reading.jarak_cm >= 0 ? '#1E88E5' : '#E53935'}]} />
                 <Text style={[styles.dashStatusText, {color: reading && reading.jarak_cm < 999 && reading.jarak_cm >= 0 ? '#1E88E5' : '#E53935'}]}>

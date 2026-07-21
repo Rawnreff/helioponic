@@ -9,7 +9,7 @@ readings = []
 base_ts = int(time.time()) - 600  # 10 min ago
 for i in range(20):
     ts = base_ts + i * 30
-    # Realistic hydroponic values (tank depth: 7cm):
+    # Realistic hydroponic values (tank depth: 32cm, configurable):
     # pH drifts between 5.5 and 6.5
     # TDS slowly increases (nutrients accumulate)
     # Water level slowly drops (evaporation), range 2-6cm

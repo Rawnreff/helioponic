@@ -170,11 +170,12 @@ class PhysicsEngine:
       - Otherwise: tds_value slowly decays (consumption)
     """
 
-    def __init__(self):
+    def __init__(self, tank_depth_cm: float = 32.0):
         # Initial sensor state — TDS starts at 400 (midpoint of user range 300-500)
         self.jarak_cm = 3.5
         self.tds_value = 400.0
         self.current_ph = 6.8
+        self.tank_depth_cm = tank_depth_cm
 
     def tick(self, pompa1: int, pompa2: int, pompa3: int, pompa4: int, dt: float = 1.0):
         """Advance physics simulation by dt seconds based on all 4 pump states."""
@@ -184,7 +185,7 @@ class PhysicsEngine:
             self.jarak_cm -= JARAK_REFILL_RATE * dt
         else:
             self.jarak_cm += JARAK_EVAP_RATE * dt
-        self.jarak_cm = max(0.5, min(TANK_DEPTH_CM - 0.3, self.jarak_cm))
+        self.jarak_cm = max(0.5, min(self.tank_depth_cm - 0.3, self.jarak_cm))
 
         # ── pH Level ──
         if pompa2 == 1:
@@ -249,12 +250,13 @@ class Simulator:
         self.cmd_p1, self.cmd_p2, self.cmd_p3, self.cmd_p4 = 0, 0, 0, 0
         self.pub_p1, self.pub_p2, self.pub_p3, self.pub_p4 = 0, 0, 0, 0
 
-        # ── Physics engine ──
-        self.physics = PhysicsEngine()
-
         # ── Hysteresis controller ──
         cfg = thresholds or {}
         self.hysteresis = HysteresisController(cfg)
+        self.tank_depth_cm = cfg.get("tank_depth_cm", 32.0)
+
+        # ── Physics engine ──
+        self.physics = PhysicsEngine(tank_depth_cm=self.tank_depth_cm)
 
         # ── Auto mode (from backend /devices/automation) ──
         self.auto_enabled = True
@@ -294,7 +296,8 @@ class Simulator:
         await self._fetch_automation_rules()
 
         logger.info(f"Simulator started for device={self.device_id}")
-        logger.info(f"  Thresholds: jarak_on={self.hysteresis.jarak_on}, "
+        logger.info(f"  Tank depth: {self.tank_depth_cm}cm | "
+                    f"Thresholds: jarak_on={self.hysteresis.jarak_on}, "
                     f"jarak_off={self.hysteresis.jarak_off}")
         logger.info(f"              ph_min={self.hysteresis.ph_min}, "
                     f"ph_max={self.hysteresis.ph_max}")
@@ -426,6 +429,15 @@ class Simulator:
                     "ph_min": data.get("ph_min", self.hysteresis.ph_min),
                     "ph_max": data.get("ph_max", self.hysteresis.ph_max),
                 }
+                # Update tank depth from config
+                new_tank = data.get("tank_depth_cm", self.tank_depth_cm)
+                if new_tank != self.tank_depth_cm:
+                    self.tank_depth_cm = new_tank
+                    self.physics.tank_depth_cm = new_tank
+                    self._prev_tank_depth = new_tank
+                    changed_tank = True
+                else:
+                    changed_tank = False
 
                 # Detect changes
                 changed = False
@@ -447,8 +459,9 @@ class Simulator:
                 for key, val in new.items():
                     setattr(self.hysteresis, key, val)
 
-                if changed:
+                if changed or changed_tank:
                     logger.info(f"\033[92mThresholds updated:\033[0m "
+                                f"tank_depth={self.tank_depth_cm}cm "
                                 f"jarak_on={new['jarak_on']} jarak_off={new['jarak_off']} "
                                 f"tds_on={new['tds_on']} tds_off={new['tds_off']} "
                                 f"ph_min={new['ph_min']} ph_max={new['ph_max']}")
@@ -503,7 +516,7 @@ class Simulator:
                 payload = {
                     "device_id": self.device_id,
                     "alarm_type": "water_level",
-                    "message": "Water level critical - ultrasonic out of range (jarak_cm=999)",
+                    "message": "Water level critical - ultrasonic out of qod (jarak_cm=999)",
                     "ts": int(now),
                 }
                 self._publish(TOPIC_ALARM, payload)

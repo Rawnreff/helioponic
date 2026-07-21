@@ -76,9 +76,9 @@ export const devicesApi = {
 
 export const configApi = {
   get: (deviceId?: string) =>
-    request<{device_id: string; jarak_on: number; jarak_off: number; tds_on: number; tds_off: number; ph_min: number; ph_max: number; updated_at: string | null}>('/devices/config', {params: {device_id: deviceId}}),
-  update: (data: {device_id: string; jarak_on: number; jarak_off: number; tds_on: number; tds_off: number; ph_min: number; ph_max: number}) =>
-    request<{status: string; device_id: string; jarak_on: number; jarak_off: number; tds_on: number; tds_off: number; ph_min: number; ph_max: number; updated_at: string}>('/devices/config', {method: 'PUT', body: data}),
+    request<{device_id: string; tank_depth_cm?: number; jarak_on: number; jarak_off: number; tds_on: number; tds_off: number; ph_min: number; ph_max: number; updated_at: string | null}>('/devices/config', {params: {device_id: deviceId}}),
+  update: (data: {device_id: string; tank_depth_cm?: number; jarak_on: number; jarak_off: number; tds_on: number; tds_off: number; ph_min: number; ph_max: number}) =>
+    request<{status: string; device_id: string; tank_depth_cm?: number; jarak_on: number; jarak_off: number; tds_on: number; tds_off: number; ph_min: number; ph_max: number; updated_at: string}>('/devices/config', {method: 'PUT', body: data}),
 };
 
 export const sensorsApi = {

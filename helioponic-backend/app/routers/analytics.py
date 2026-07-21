@@ -370,8 +370,12 @@ async def post_sensor_reading(
 
     # Broadcast to WebSocket clients
     if websocket_broadcast:
-        from app.services.water import WaterCalculator
-        water_calc = WaterCalculator()
+        tank_depth = config_dict.get("tank_depth_cm", 32.0)
+        # Compute water_level_pct with dynamic tank depth
+        if tank_depth and reading.jarak_cm < 999 and reading.jarak_cm >= 0:
+            water_pct = round(min(100, max(0, (tank_depth - reading.jarak_cm) / tank_depth * 100)))
+        else:
+            water_pct = 0
         broadcast_data = {
             "type": "sensor_update",
             "device_id": device_id,
@@ -383,7 +387,8 @@ async def post_sensor_reading(
             "pompa2": reading.pompa2,
             "pompa3": reading.pompa3,
             "pompa4": reading.pompa4,
-            "water_level_pct": water_calc.jarak_to_water_level_pct(reading.jarak_cm),
+            "water_level_pct": water_pct,
+            "tank_depth_cm": tank_depth,
             "night_mode": is_night,
             "auto_enabled": auto_enabled,
             "recorded_at": now.isoformat(),
@@ -569,7 +574,12 @@ async def export_sensor_csv(
         writer = csv.writer(buf)
         header_written = False
 
-        WATER_TANK_CM = 7.0
+        # Fetch tank depth from device config (default 32cm)
+        config = await db.device_configs.find_one(
+            {"device_id": device_id},
+            sort=[("updated_at", -1)],
+        )
+        water_tank_cm = float(config.get("tank_depth_cm", 32.0)) if config else 32.0
 
         async for doc in cursor:
             if not header_written:
@@ -588,12 +598,12 @@ async def export_sensor_csv(
             tds = doc.get("tds_value", 0) or 0
             jarak = doc.get("jarak_cm", 0) or 0
 
-            # Compute water level pct (7cm tank)
+            # Compute water level pct with dynamic tank depth
             if jarak >= 999 or jarak < 0:
                 water_pct = 0
             else:
-                water_depth = WATER_TANK_CM - min(jarak, WATER_TANK_CM)
-                water_pct = round(max(0, min(100, (water_depth / WATER_TANK_CM) * 100)))
+                water_depth = water_tank_cm - min(jarak, water_tank_cm)
+                water_pct = round(max(0, min(100, (water_depth / water_tank_cm) * 100)))
 
             p1 = int(doc.get("pompa1", 0) or 0)
             p2 = int(doc.get("pompa2", 0) or 0)

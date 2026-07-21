@@ -105,11 +105,11 @@ function aggregateRecords(
 
 // ─── Helpers ──────────────────────────────────────────
 
-function computeWaterPct(jarakCm: number): number {
+function computeWaterPct(jarakCm: number, tankDepthCm?: number): number {
   if (jarakCm >= 999 || jarakCm < 0) return 0;
-  const TANK_DEPTH_CM = 7;
-  const waterDepth = TANK_DEPTH_CM - Math.min(jarakCm, TANK_DEPTH_CM);
-  return Math.max(0, Math.min(100, (waterDepth / TANK_DEPTH_CM) * 100));
+  const depth = tankDepthCm || 32;
+  const waterDepth = depth - Math.min(jarakCm, depth);
+  return Math.max(0, Math.min(100, (waterDepth / depth) * 100));
 }
 
 function getTimeRange(period: Period): {from: Date; to: Date} {

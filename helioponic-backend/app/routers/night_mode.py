@@ -72,6 +72,7 @@ async def activate_night_mode(
     saved_thresholds = {}
     if current_config:
         saved_thresholds = {
+            "tank_depth_cm": float(current_config.get("tank_depth_cm", 32.0)),
             "jarak_on": float(current_config.get("jarak_on", 105)),
             "jarak_off": float(current_config.get("jarak_off", 95)),
             "tds_on": current_config.get("tds_on", 95.0),
@@ -141,7 +142,9 @@ async def deactivate_night_mode(
 
     # Restore thresholds to device_configs
     restored_config = {
-        "device_id": device_id,            "jarak_on": float(saved.get("jarak_on", 5)),
+        "device_id": device_id,
+        "tank_depth_cm": float(saved.get("tank_depth_cm", 32.0)),
+        "jarak_on": float(saved.get("jarak_on", 5)),
         "jarak_off": float(saved.get("jarak_off", 2)),
         "tds_on": saved.get("tds_on", 95.0),
         "tds_off": saved.get("tds_off", 105.0),
@@ -166,6 +169,7 @@ async def deactivate_night_mode(
             "jarak_off": restored_config["jarak_off"],
             "tds_on": restored_config["tds_on"],
             "tds_off": restored_config["tds_off"],
+            "tank_depth_cm": restored_config["tank_depth_cm"],
         })
 
     logger.info(f"Night mode deactivated for device {device_id}")

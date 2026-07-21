@@ -17,43 +17,47 @@ from datetime import datetime
 class WaterCalculator:
     """Handles water level differentiation.
 
-    Tank geometry constants are configurable per installation.
+    Tank geometry is configurable per device via device_configs.
     """
 
-    # Total reservoir depth in cm (actual tank depth: 7cm)
-    TANK_HEIGHT_CM: float = 7.0
+    def __init__(self, tank_depth_cm: float = 32.0):
+        """Initialize with tank depth from device config.
 
-    # Tank cross-sectional area in cm² (default: 50cm x 50cm = 2500 cm²)
-    TANK_AREA_CM2: float = 2500.0
+        Args:
+            tank_depth_cm: Total tank depth in cm (sensor-to-bottom).
+                           Default 32cm for standard reservoir.
+        """
+        self.tank_depth_cm = tank_depth_cm
 
-    def jarak_to_water_level_pct(self, jarak_cm: float) -> float:
+    def jarak_to_water_level_pct(self, jarak_cm: float, tank_depth_cm: float | None = None) -> float:
         """Convert ultrasonic distance reading to water level percentage.
 
-        Tank depth = 7 cm
-        Formula: water_level_pct = ((7 - jarak_cm) / 7) × 100
+        Tank depth = tank_depth_cm or self.tank_depth_cm (configurable per device)
+        Formula: water_level_pct = ((tank_depth - jarak_cm) / tank_depth) × 100
 
-        Examples:
-          - jarak_cm = 0  → water depth = 7cm → 100% (tank full)
-          - jarak_cm = 3.5 → water depth = 3.5cm → 50% (half full)
-          - jarak_cm = 7  → water depth = 0cm → 0% (empty)
-          - jarak_cm > 7  → 0% (sensor error or no water)
+        Examples (32cm tank):
+          - jarak_cm = 0  → water depth = 32cm → 100% (tank full)
+          - jarak_cm = 16 → water depth = 16cm → 50% (half full)
+          - jarak_cm = 32 → water depth = 0cm → 0% (empty)
+          - jarak_cm > 32 → 0% (sensor error or no water)
 
         If jarak_cm is 999 (out of range), return 0.
         """
         if jarak_cm >= 999 or jarak_cm < 0:
             return 0.0
-        water_depth = self.TANK_HEIGHT_CM - float(jarak_cm)
+        depth = tank_depth_cm if tank_depth_cm is not None else self.tank_depth_cm
+        water_depth = depth - float(jarak_cm)
         if water_depth < 0:
             return 0.0
-        return (water_depth / self.TANK_HEIGHT_CM) * 100.0
+        return (water_depth / depth) * 100.0
 
     def level_delta_to_volume(self, level_delta_pct: float) -> float:
         """Convert water level percentage change to volume in liters.
 
-        1% of tank height = 0.3 cm → volume = 0.3 cm * 2500 cm² = 750 cm³ = 0.75 L
+        1% of tank height → volume = 1%_height_cm * 2500 cm² → liters.
         """
-        delta_cm = (level_delta_pct / 100.0) * self.TANK_HEIGHT_CM
-        volume_cm3 = delta_cm * self.TANK_AREA_CM2
+        delta_cm = (level_delta_pct / 100.0) * self.tank_depth_cm
+        volume_cm3 = delta_cm * 2500.0  # default 50cm x 50cm base area
         return volume_cm3 / 1000.0
 
     def calculate_water_delta(

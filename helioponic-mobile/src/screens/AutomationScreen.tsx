@@ -1,5 +1,5 @@
 import React, {useState, useEffect, useCallback} from 'react';
-import {View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, Switch} from 'react-native';
+import {View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, TextInput, ActivityIndicator, Switch, Modal} from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {LinearGradient} from 'expo-linear-gradient';
 import Slider from '@react-native-community/slider';
@@ -12,7 +12,7 @@ import {useSensorStore} from '../store/sensorStore';
 import {SectionHeader} from '../components/SectionHeader';
 import {Colors, Shadows} from '../context/ThemeContext';
 
-interface ThresholdDraft {jarak_on: number; jarak_off: number; tds_on: number; tds_off: number; ph_min: number; ph_max: number}
+interface ThresholdDraft {tank_depth_cm?: number; jarak_on: number; jarak_off: number; tds_on: number; tds_off: number; ph_min: number; ph_max: number}
 
 // ── Reusable compact threshold slider (internal) ──────────────────────
 function ParamSlider({icon, title, subtitle, color, bg, value, min, max, step, displayValue, extraDisplay, onChange, disabled}: {
@@ -149,6 +149,17 @@ export default function AutomationScreen() {
   const nightModeActive = useNightModeStore((s) => s.active);
   const setNightStatus = useNightModeStore((s) => s.setStatus);
 
+  // ── Tank depth local text (prevents controlled-input fighting while typing) ──
+  const [tankDepthText, setTankDepthText] = useState('32');
+  const tankDepthDraftRef = React.useRef<string>('32');
+
+  // ── Type-confirm modal for tank depth changes ──
+  const [showWaterConfirm, setShowWaterConfirm] = useState(false);
+  const [waterConfirmInput, setWaterConfirmInput] = useState('');
+  const [waterConfirmError, setWaterConfirmError] = useState(false);
+  // useRef instead of useState: avoids stale closure in onPress handlers after multiple re-renders
+  const pendingWaterSaveRef = React.useRef<(() => Promise<void>) | null>(null);
+
   // ── Fetch data on mount & every time screen is focused ────────────────
   // useFocusEffect refetches automation config whenever user comes back to
   // this tab (e.g. after disabling auto-pump from Dashboard).
@@ -161,11 +172,13 @@ export default function AutomationScreen() {
           const data = await configApi.get(activeDeviceId);
           if (cancelled) return;
           const t: ThresholdDraft = {
+            tank_depth_cm: data.tank_depth_cm ?? 32,
             jarak_on: data.jarak_on ?? 5, jarak_off: data.jarak_off ?? 2,
             tds_on: data.tds_on ?? 95.0, tds_off: data.tds_off ?? 105.0,
             ph_min: data.ph_min ?? 5.5, ph_max: data.ph_max ?? 6.5,
           };
           setServerThresholds(t); setDraft(t);
+          setTankDepthText(String(Math.round((t.tank_depth_cm ?? 32) * 10) / 10));
 
           // Fetch automation rules (master toggle + toggles)
           try {
@@ -179,8 +192,9 @@ export default function AutomationScreen() {
           }
         } catch {
           if (cancelled) return;
-          const t: ThresholdDraft = {jarak_on: 5, jarak_off: 2, tds_on: 95.0, tds_off: 105.0, ph_min: 5.5, ph_max: 6.5};
+          const t: ThresholdDraft = {tank_depth_cm: 32, jarak_on: 5, jarak_off: 2, tds_on: 95.0, tds_off: 105.0, ph_min: 5.5, ph_max: 6.5};
           setServerThresholds(t); setDraft(t);
+          setTankDepthText(String(Math.round((t.tank_depth_cm ?? 32) * 10) / 10));
         } finally {
           if (!cancelled) setLoading(false);
         }
@@ -199,7 +213,7 @@ export default function AutomationScreen() {
   // ── Helpers ───────────────────────────────────────────────────────────
   const hasWaterChanges = useCallback(() => {
     if (!serverThresholds || !draft) return false;
-    return draft.jarak_on !== serverThresholds.jarak_on || draft.jarak_off !== serverThresholds.jarak_off;
+    return draft.jarak_on !== serverThresholds.jarak_on || draft.jarak_off !== serverThresholds.jarak_off || draft.tank_depth_cm !== serverThresholds.tank_depth_cm;
   }, [serverThresholds, draft]);
 
   const hasTdsChanges = useCallback(() => {
@@ -249,24 +263,41 @@ export default function AutomationScreen() {
   // ── Confirm save: Water thresholds ────────────────────────────────────
   const handleWaterConfirm = useCallback(async () => {
     if (!draft) return;
-    const changes: string[] = [];
-    if (draft.jarak_on !== serverThresholds?.jarak_on) changes.push(`Jarak ON: ${serverThresholds?.jarak_on} → ${draft.jarak_on} cm`);
-    if (draft.jarak_off !== serverThresholds?.jarak_off) changes.push(`Jarak OFF: ${serverThresholds?.jarak_off} → ${draft.jarak_off} cm`);
-    Alert.alert('Review Water Level Changes', changes.join('\n'), [
+    const tankDepthChanged = draft.tank_depth_cm !== (serverThresholds?.tank_depth_cm ?? 32);
+    const jarakChanges: string[] = [];
+    if (draft.jarak_on !== serverThresholds?.jarak_on) jarakChanges.push(`Jarak ON: ${serverThresholds?.jarak_on} → ${draft.jarak_on} cm`);
+    if (draft.jarak_off !== serverThresholds?.jarak_off) jarakChanges.push(`Jarak OFF: ${serverThresholds?.jarak_off} → ${draft.jarak_off} cm`);
+
+    const doSave = async () => {
+      setSavingWater(true);
+      try {
+        await configApi.update({
+          device_id: activeDeviceId,
+          tank_depth_cm: draft.tank_depth_cm,
+          jarak_on: draft.jarak_on, jarak_off: draft.jarak_off,
+          tds_on: serverThresholds?.tds_on ?? draft.tds_on, tds_off: serverThresholds?.tds_off ?? draft.tds_off,
+          ph_min: draft.ph_min, ph_max: draft.ph_max,
+        });
+        setServerThresholds((prev) => prev ? {...prev, tank_depth_cm: draft.tank_depth_cm, jarak_on: draft.jarak_on, jarak_off: draft.jarak_off} : null);
+        setTankDepthText(String(Math.round((draft.tank_depth_cm ?? 32) * 10) / 10));
+        Alert.alert('Water Level', 'Thresholds synced to hardware');
+      } catch (err: any) {Alert.alert('Error', err.message || 'Failed')}
+      finally {setSavingWater(false)}
+    };
+
+    if (tankDepthChanged) {
+      // ⚠ Tank depth change — require typed confirmation
+      pendingWaterSaveRef.current = doSave;
+      setWaterConfirmInput('');
+      setWaterConfirmError(false);
+      setShowWaterConfirm(true);
+      return;
+    }
+
+    if (jarakChanges.length === 0) return;
+    Alert.alert('Review Water Level Changes', jarakChanges.join('\n'), [
       {text: 'Cancel', style: 'cancel', onPress: () => setDraft(serverThresholds ? {...serverThresholds} : null)},
-      {text: 'Confirm', onPress: async () => {
-        setSavingWater(true);
-        try {
-          await configApi.update({
-            device_id: activeDeviceId, jarak_on: draft.jarak_on, jarak_off: draft.jarak_off,
-            tds_on: serverThresholds?.tds_on ?? draft.tds_on, tds_off: serverThresholds?.tds_off ?? draft.tds_off,
-            ph_min: draft.ph_min, ph_max: draft.ph_max,
-          });
-          setServerThresholds((prev) => prev ? {...prev, jarak_on: draft.jarak_on, jarak_off: draft.jarak_off} : null);
-          Alert.alert('Water Level', 'Thresholds synced to hardware');
-        } catch (err: any) {Alert.alert('Error', err.message || 'Failed')}
-        finally {setSavingWater(false)}
-      }},
+      {text: 'Confirm', onPress: doSave},
     ]);
   }, [draft, serverThresholds, activeDeviceId]);
 
@@ -282,12 +313,14 @@ export default function AutomationScreen() {
         setSavingTds(true);
         try {
           await configApi.update({
-            device_id: activeDeviceId, jarak_on: serverThresholds?.jarak_on ?? draft.jarak_on,
+            device_id: activeDeviceId,
+            tank_depth_cm: serverThresholds?.tank_depth_cm ?? draft.tank_depth_cm,
+            jarak_on: serverThresholds?.jarak_on ?? draft.jarak_on,
             jarak_off: serverThresholds?.jarak_off ?? draft.jarak_off,
             tds_on: draft.tds_on, tds_off: draft.tds_off,
             ph_min: draft.ph_min, ph_max: draft.ph_max,
           });
-          setServerThresholds((prev) => prev ? {...prev, tds_on: draft.tds_on, tds_off: draft.tds_off} : null);
+          setServerThresholds((prev) => prev ? {...prev, tank_depth_cm: prev.tank_depth_cm ?? draft.tank_depth_cm, tds_on: draft.tds_on, tds_off: draft.tds_off} : null);
           Alert.alert('TDS', 'Thresholds synced to hardware');
         } catch (err: any) {Alert.alert('Error', err.message || 'Failed')}
         finally {setSavingTds(false)}
@@ -307,13 +340,15 @@ export default function AutomationScreen() {
         setSavingPh(true);
         try {
           await configApi.update({
-            device_id: activeDeviceId, jarak_on: serverThresholds?.jarak_on ?? draft.jarak_on,
+            device_id: activeDeviceId,
+            tank_depth_cm: serverThresholds?.tank_depth_cm ?? draft.tank_depth_cm,
+            jarak_on: serverThresholds?.jarak_on ?? draft.jarak_on,
             jarak_off: serverThresholds?.jarak_off ?? draft.jarak_off,
             tds_on: serverThresholds?.tds_on ?? draft.tds_on,
             tds_off: serverThresholds?.tds_off ?? draft.tds_off,
             ph_min: draft.ph_min, ph_max: draft.ph_max,
           });
-          setServerThresholds((prev) => prev ? {...prev, ph_min: draft.ph_min, ph_max: draft.ph_max} : null);
+          setServerThresholds((prev) => prev ? {...prev, tank_depth_cm: prev.tank_depth_cm ?? draft.tank_depth_cm, ph_min: draft.ph_min, ph_max: draft.ph_max} : null);
           Alert.alert('pH Level', 'Thresholds synced to hardware');
         } catch (err: any) {Alert.alert('Error', err.message || 'Failed')}
         finally {setSavingPh(false)}
@@ -343,10 +378,11 @@ export default function AutomationScreen() {
     </SafeAreaView>
   );
 
-  const t = draft ?? serverThresholds ?? {jarak_on: 5, jarak_off: 2, tds_on: 95.0, tds_off: 105.0, ph_min: 5.5, ph_max: 6.5};
+  const t = draft ?? serverThresholds ?? {tank_depth_cm: 32, jarak_on: 5, jarak_off: 2, tds_on: 95.0, tds_off: 105.0, ph_min: 5.5, ph_max: 6.5};
+  const tankDepth = (t as any).tank_depth_cm ?? serverThresholds?.tank_depth_cm ?? 32;
 
   // ── Water level pct helpers ───────────────────────────────────────────
-  const waterPct = (cm: number) => ((7 - Math.min(cm, 7)) / 7) * 100;
+  const waterPct = (cm: number) => ((tankDepth - Math.min(cm, tankDepth)) / tankDepth) * 100;
   const waterCannotEdit = savingWater || !autoEnabled || !rules.water;
 
   // ── Format water percentage for display ──
@@ -405,6 +441,29 @@ export default function AutomationScreen() {
           confirmDisabled={!autoEnabled}
           sliders={
             <>
+              {/* ── Tank Depth (customizable reservoir geometry) ── */}
+              <View style={[styles.tankDepthRow, !autoEnabled && {opacity: 0.5}]}>
+                <Ionicons name="resize" size={18} color={!autoEnabled ? Colors.textHint : Colors.waterTeal} />
+                <View style={{flex: 1, marginLeft: 10}}>
+                  <Text style={[styles.tankDepthLabel, !autoEnabled && {color: Colors.textHint}]}>Tank Depth</Text>
+                  <Text style={[styles.tankDepthSub, !autoEnabled && {color: Colors.textHint}]}>Total reservoir height (sensor to bottom)</Text>
+                </View>
+                <TextInput
+                  style={[styles.tankDepthInput, !autoEnabled && {color: Colors.textHint, borderColor: Colors.cardBorder}]}
+                  value={tankDepthText}
+                  onChangeText={(v: string) => {
+                    setTankDepthText(v);
+                    const num = parseFloat(v);
+                    if (!isNaN(num) && num >= 5 && num <= 200) {
+                      setDraft((d) => d ? {...d, tank_depth_cm: num} : null);
+                    }
+                  }}
+                  keyboardType="decimal-pad"
+                  editable={!waterCannotEdit}
+                  placeholder="32"
+                />
+                <Text style={[styles.tankDepthUnit, !autoEnabled && {color: Colors.textHint}]}>cm</Text>
+              </View>
               <ParamSlider
                 icon="arrow-up-circle"
                 title="Jarak ON (Refill)"
@@ -413,7 +472,7 @@ export default function AutomationScreen() {
                 bg={!autoEnabled ? Colors.cardBorder : (rules.water ? Colors.waterBg : Colors.cardBorder)}
                 value={t.jarak_on}
                 min={0.0}
-                max={7.0}
+                max={tankDepth}
                 step={0.1}
                 displayValue={`${t.jarak_on.toFixed(1)} cm`}
                 extraDisplay={waterDisplay(t.jarak_on)}
@@ -587,6 +646,83 @@ export default function AutomationScreen() {
           </View>
         </View>
       </ScrollView>
+
+      {/* ════════════════════════════════════════════════════════════
+         TYPE-CONFIRM MODAL — tank depth change safety gate
+         User must type "confirm" to prevent accidental changes
+         ════════════════════════════════════════════════════════════ */}
+      <Modal
+        visible={showWaterConfirm}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => {
+          setShowWaterConfirm(false);
+          pendingWaterSaveRef.current = null;
+          setDraft(serverThresholds ? {...serverThresholds} : null);
+          setTankDepthText(String(Math.round((serverThresholds?.tank_depth_cm ?? 32) * 10) / 10));
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <LinearGradient colors={[Colors.waterTeal, Colors.waterLight] as const} start={{x: 0, y: 0}} end={{x: 1, y: 0}} style={styles.modalAccent} />
+            <View style={styles.modalHeader}>
+              <View style={[styles.modalIconBadge, {backgroundColor: Colors.waterBg}]}>
+                <Ionicons name="warning" size={24} color={Colors.waterTeal} />
+              </View>
+              <Text style={styles.modalTitle}>Confirm Tank Depth Change</Text>
+            </View>
+            <Text style={styles.modalBody}>
+              You are about to change the reservoir depth from{' '}
+              <Text style={{fontWeight: '800', color: Colors.waterTeal}}>{serverThresholds?.tank_depth_cm ?? 32} cm</Text>
+              {' → '}
+              <Text style={{fontWeight: '800', color: Colors.waterTeal}}>{draft?.tank_depth_cm ?? 32} cm</Text>.
+              {'\n\n'}This affects ALL water level calculations across the entire app.
+              {'\n\n'}Type <Text style={{fontWeight: '800'}}>confirm</Text> below to proceed.
+            </Text>
+            <TextInput
+              style={[styles.modalInput, waterConfirmError && {borderColor: '#EF4444', backgroundColor: '#FEF2F2'}]}
+              value={waterConfirmInput}
+              onChangeText={(v: string) => { setWaterConfirmInput(v); setWaterConfirmError(false); }}
+              placeholder='Type "confirm" here'
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            {waterConfirmError && (
+              <Text style={styles.modalError}>Please type "confirm" exactly to proceed</Text>
+            )}
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => {
+                  setShowWaterConfirm(false);
+                  pendingWaterSaveRef.current = null;
+                  setDraft(serverThresholds ? {...serverThresholds} : null);
+                  setTankDepthText(String(Math.round((serverThresholds?.tank_depth_cm ?? 32) * 10) / 10));
+                }}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalConfirmBtn, waterConfirmInput.toLowerCase().trim() !== 'confirm' && {opacity: 0.4}]}
+                onPress={() => {
+                  if (waterConfirmInput.toLowerCase().trim() !== 'confirm') {
+                    setWaterConfirmError(true);
+                    return;
+                  }
+                  setShowWaterConfirm(false);
+                  setWaterConfirmInput('');
+                  const fn = pendingWaterSaveRef.current;
+                  pendingWaterSaveRef.current = null;
+                  if (fn) fn();
+                }}
+              >
+                <Text style={styles.modalConfirmText}>Confirm Change</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -637,6 +773,13 @@ const styles = StyleSheet.create({
   previewRow: {flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4},
   previewText: {fontSize: 10, color: Colors.textSecondary, fontWeight: '500', flex: 1, lineHeight: 14},
 
+  // ── Tank Depth input inside Water Level card ──
+  tankDepthRow: {flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 4, marginBottom: 12, borderBottomWidth: 1, borderBottomColor: Colors.cardBorder},
+  tankDepthLabel: {fontSize: 13, fontWeight: '700', color: Colors.textPrimary},
+  tankDepthSub: {fontSize: 10, color: Colors.textSecondary, fontWeight: '500', marginTop: 1},
+  tankDepthInput: {width: 60, height: 44, borderWidth: 1.5, borderColor: Colors.waterTeal + '40', borderRadius: 10, textAlign: 'center', fontSize: 15, fontWeight: '800', color: Colors.waterTeal, backgroundColor: Colors.waterBg},
+  tankDepthUnit: {fontSize: 13, fontWeight: '600', color: Colors.waterTeal, marginLeft: 6},
+
   // Disabled banner (shown when auto-pump is OFF)
   disabledBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
@@ -667,4 +810,20 @@ const styles = StyleSheet.create({
   deviceStatusRight: {flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: Colors.paleGreen, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16},
   deviceDot: {width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.statusGreen},
   deviceStatusText: {fontSize: 11, fontWeight: '700', color: Colors.deepGreen},
+
+  // ── Type-confirm modal (tank depth change) ──
+  modalOverlay: {flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 24},
+  modalCard: {width: '100%', backgroundColor: '#fff', borderRadius: 20, overflow: 'hidden'},
+  modalAccent: {height: 4},
+  modalHeader: {flexDirection: 'row', alignItems: 'center', gap: 12, padding: 20, paddingBottom: 12},
+  modalIconBadge: {width: 44, height: 44, borderRadius: 14, justifyContent: 'center', alignItems: 'center'},
+  modalTitle: {fontSize: 17, fontWeight: '800', color: Colors.textPrimary, flex: 1},
+  modalBody: {fontSize: 13, color: Colors.textSecondary, fontWeight: '500', lineHeight: 20, paddingHorizontal: 20, paddingBottom: 16},
+  modalInput: {marginHorizontal: 20, height: 48, borderWidth: 1.5, borderColor: Colors.cardBorder, borderRadius: 12, paddingHorizontal: 16, fontSize: 15, fontWeight: '600', color: Colors.textPrimary, backgroundColor: '#F8F9FA'},
+  modalError: {fontSize: 11, color: '#EF4444', fontWeight: '600', marginHorizontal: 20, marginTop: 6},
+  modalActions: {flexDirection: 'row', gap: 12, padding: 20, paddingTop: 16},
+  modalCancelBtn: {flex: 1, paddingVertical: 14, borderRadius: 14, borderWidth: 1.5, borderColor: Colors.cardBorder, alignItems: 'center'},
+  modalCancelText: {fontSize: 14, fontWeight: '700', color: Colors.textSecondary},
+  modalConfirmBtn: {flex: 1, paddingVertical: 14, borderRadius: 14, backgroundColor: Colors.waterTeal, alignItems: 'center'},
+  modalConfirmText: {fontSize: 14, fontWeight: '700', color: '#fff'},
 });
